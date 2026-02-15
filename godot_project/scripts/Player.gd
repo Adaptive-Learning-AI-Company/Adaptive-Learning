@@ -69,10 +69,11 @@ func update_highlight():
 	var normal = camera.project_ray_normal(center)
 	# Offset start to avoid self-collision (especially with SpringArm)
 	from += normal * 1.5 
-	var to = from + normal * 10.0
+	var to = from + normal * 14.0
 	
 	var query = PhysicsRayQueryParameters3D.create(from, to)
 	query.collide_with_areas = true
+	# Shelves/walls should block interaction rays for objects behind them.
 	query.collide_with_bodies = true
 	# Exclude self
 	query.exclude = [self.get_rid()]
@@ -82,20 +83,15 @@ func update_highlight():
 	
 	if result:
 		var collider = result.collider
-		if collider.has_meta("topic") or (collider.get_parent() and collider.get_parent().has_meta("topic")):
-			# Identify the book node (which has the visual mesh as child usually, or IS the parent of collision)
-			# In Library.gd: Area3D(Book) -> MeshInstance3D, CollisionShape3D
-			# If we hit Area3D, we want to scale the MeshInstance3D child? 
-			# Or just scale the whole book Area3D? Scaling Area3D might mess physics but for static trigger its fine.
-			# Library.gd structure:
-			# book (Area3D)
-			#   - MeshInstance3D
-			#   - CollisionShape3D
-			#   - Label3D
-			
+		var parent = collider.get_parent()
+		var is_direct_interactable = collider.has_meta("topic") or collider.has_meta("shelf_category")
+		var is_parent_interactable = parent and (parent.has_meta("topic") or parent.has_meta("shelf_category"))
+		
+		if is_direct_interactable or is_parent_interactable:
+			# Support both textbooks (topic) and subject selectors (shelf_category).
 			current_obj = collider
-			if collider.get_parent().has_meta("topic"):
-				current_obj = collider.get_parent()
+			if is_parent_interactable:
+				current_obj = parent
 	
 	# Highlight Logic
 	if current_obj != last_highlighted_obj:

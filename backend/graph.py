@@ -133,8 +133,13 @@ def teacher_node(state: AgentState):
     finally:
         db.close()
     
+    # Always define topic label to avoid crashes when no node is selected yet.
+    topic_label = str(state.get("topic", "General"))
     if current_node:
-        topic_label = f"{state['topic']}: {current_node.label} ({current_node.description})"
+        var_desc = f" ({current_node.description})" if current_node.description else ""
+        topic_label = f"{state['topic']}: {current_node.label}{var_desc}"
+    else:
+        topic_label = f"{topic_label}: core concepts overview"
         
     # [NEW] Role-Based Prompt Selection
     role = state.get("role", "Student")

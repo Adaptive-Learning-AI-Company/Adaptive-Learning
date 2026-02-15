@@ -1,9 +1,32 @@
 import json
 import os
+import re
 import networkx as nx
 from typing import List, Dict, Optional, Tuple
 
 GRAPH_DIR = os.path.join(os.path.dirname(__file__), "data", "knowledge_graphs")
+
+
+def _normalize_subject_name(subject: str) -> str:
+    """Normalize UI/backend topic strings to canonical KG subject names."""
+    raw = (subject or "").strip()
+    if not raw:
+        return "math"
+
+    # Handle composite paths like "Math/Algebra".
+    if "/" in raw:
+        raw = raw.split("/")[0].strip()
+
+    # Remove grade suffixes/prefixes from selected bookshelf topics.
+    # Examples: "Math 7", "Science Grade 5", "History grade-8".
+    raw = re.sub(r"\bgrade[_\-\s]*\d+\b", "", raw, flags=re.IGNORECASE).strip()
+    raw = re.sub(r"\s+\d+\s*$", "", raw).strip()
+
+    # Normalize separators.
+    normalized = re.sub(r"[\s\-]+", "_", raw).strip("_").lower()
+    if not normalized:
+        normalized = "math"
+    return normalized
 
 class KnowledgeGraph:
     def __init__(self, subject: str, state: str = "NH"):
@@ -22,8 +45,12 @@ class KnowledgeGraph:
             "social_studies": "Social_Studies",
             "ela": "ELA"
         }
-        
-        dir_name = subject_map.get(self.subject.lower(), self.subject.capitalize())
+
+        normalized_subject = _normalize_subject_name(self.subject)
+        dir_name = subject_map.get(
+            normalized_subject,
+            normalized_subject.replace("_", " ").title().replace(" ", "_")
+        )
         # Updated path: knowledge_graphs/{State}/{Subject}
         subject_dir = os.path.join(GRAPH_DIR, self.state, dir_name)
         
@@ -279,15 +306,11 @@ class KnowledgeGraph:
 _graphs = {}
 
 def get_graph(subject: str, state: str = "NH") -> KnowledgeGraph:
-    # Handle composite "Subject/Topic" paths
-    if "/" in subject:
-        subject = subject.split("/")[0]
-        
-    subj_lower = subject.lower()
-    cache_key = f"{state}:{subj_lower}"
+    normalized_subject = _normalize_subject_name(subject)
+    cache_key = f"{state}:{normalized_subject}"
     
     if cache_key not in _graphs:
-        _graphs[cache_key] = KnowledgeGraph(subj_lower, state)
+        _graphs[cache_key] = KnowledgeGraph(normalized_subject, state)
     return _graphs[cache_key]
 
 def get_all_subjects_stats(player_id: int, db_session) -> Tuple[int, int]:
