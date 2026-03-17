@@ -122,6 +122,12 @@ var profile_grade_level := 1
 var profile_role := "Student"
 var profile_is_admin := false
 
+
+func _extract_explicit_admin_flag(stats: Dictionary) -> bool:
+	if not stats.has("is_admin"):
+		return false
+	return typeof(stats["is_admin"]) == TYPE_BOOL and stats["is_admin"] == true
+
 func _ready():
 	randomize()
 	# Init Network Manager
@@ -387,7 +393,7 @@ func _on_stats_received(_code, response):
 		if hud_role and stats.has("role"):
 			hud_role.text = "Role: " + str(stats["role"])
 			profile_role = str(stats["role"])
-		profile_is_admin = bool(stats.get("is_admin", str(profile_role).to_lower() == "admin"))
+		profile_is_admin = _extract_explicit_admin_flag(stats)
 		_refresh_admin_visibility()
 
 		if stats.has("avatar_id"):
@@ -570,7 +576,7 @@ func _setup_profile_window():
 
 
 func _is_admin_user() -> bool:
-	return profile_is_admin or str(profile_role).to_lower() == "admin"
+	return profile_is_admin
 
 
 func _refresh_admin_visibility():
