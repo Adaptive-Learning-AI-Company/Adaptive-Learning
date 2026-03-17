@@ -65,7 +65,7 @@ func _ready():
 	if not has_node("Panel/MainContainer/AccessCodeInput"):
 		var access = LineEdit.new()
 		access.name = "AccessCodeInput"
-		access.placeholder_text = "Access Code (Beta)"
+		access.placeholder_text = "Access Code (Optional)"
 		access.secret = true
 		$Panel/MainContainer.add_child(access)
 	
@@ -197,20 +197,6 @@ func _on_start_pressed():
 	if password == "":
 		status_label.text = "Password required."
 		return
-
-	# Verify Access Code (Production Only)
-	if not (OS.has_feature("editor") or OS.has_feature("debug")):
-		var acc_input = $Panel/MainContainer/AccessCodeInput
-		var code = acc_input.text.strip_edges()
-		var valid_code = OS.get_environment("GAME_ACCESS_CODE")
-		
-		if valid_code != "" and code != valid_code:
-			status_label.text = "Invalid Access Code."
-			return
-		
-		if valid_code == "" and code == "":
-			status_label.text = "Server Error: Access Code not configured."
-			return
 		
 	status_label.text = "Logging in..."
 	start_button.disabled = true
@@ -240,9 +226,7 @@ func _on_start_pressed():
 			if gm:
 				gm.player_username = username
 			
-			# We can now go to Library
-			# Proceed to Initialize Session (Advanced options, etc.)
-			_initialize_session(username)
+			_redeem_access_code_then_initialize(username)
 		else:
 			print("Startup: Login failed with code: " + str(code))
 			print("Startup: Login response body: " + body.get_string_from_utf8())
@@ -269,6 +253,30 @@ func _on_start_pressed():
 
 	# Gather settings from Advanced (even if hidden, they hold values)
 	
+func _redeem_access_code_then_initialize(username):
+	var acc_input = $Panel/MainContainer/AccessCodeInput
+	var access_code = acc_input.text.strip_edges() if acc_input else ""
+	if access_code == "":
+		_initialize_session(username)
+		return
+
+	status_label.text = "Redeeming access code..."
+	start_button.disabled = true
+
+	var payload = {
+		"username": username,
+		"code": access_code
+	}
+	NetworkManager.post_request("/redeem_access_code", payload, func(_code, response):
+		if acc_input:
+			acc_input.text = ""
+		status_label.text = "Access code accepted."
+		_initialize_session(username)
+	, func(code, err):
+		start_button.disabled = false
+		status_label.text = err if err != "" else "Access code failed."
+	)
+
 func _on_forgot_password_pressed():
 	# Create Popup if missing
 	if forgot_pcode_popup == null:
@@ -379,9 +387,15 @@ func _initialize_session(username):
 	init_http.request_completed.connect(func(result, code, headers, body):
 		if code == 200:
 			var json = JSON.parse_string(body.get_string_from_utf8())
+			if json and json.has("avatar_id") and gm:
+				gm.player_avatar_id = str(json["avatar_id"])
 			get_tree().change_scene_to_file("res://scenes/Library.tscn")
 		else:
-			status_label.text = "Error: " + str(code)
+			var error_text = "Error: " + str(code)
+			var parsed = JSON.parse_string(body.get_string_from_utf8())
+			if parsed and parsed.has("detail"):
+				error_text = str(parsed["detail"])
+			status_label.text = error_text
 			start_button.disabled = false
 	)
 	

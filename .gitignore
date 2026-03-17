@@ -121,6 +121,7 @@ celerybeat.pid
 
 # Environments
 .env
+.env.secret
 .venv
 env/
 venv/
@@ -170,9 +171,15 @@ compute_gephi2.py
 learning_data.db
 godot_project/scripts/Secrets.gd
 godot_project/scripts/Secrets.gd.uid
+godot_project/scripts/GeneratedSecrets.gd
+godot_project/scripts/GeneratedSecrets.gd.uid
 
 # Android Exports & Keys
 *.apk
 *.aab
 *.idsig
 *.keystore
+
+# Local Godot export artifacts
+platform_executables/*
+!platform_executables/.gitkeep

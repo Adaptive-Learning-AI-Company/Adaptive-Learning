@@ -1,0 +1,21 @@
+{
+  "name": "Adaptive Tutor",
+  "short_name": "Adaptive Tutor",
+  "description": "Adaptive Tutor browser experience for desktop and iPad.",
+  "start_url": "/app/",
+  "display": "standalone",
+  "background_color": "#14212f",
+  "theme_color": "#14212f",
+  "icons": [
+    {
+      "src": "/app/index.icon.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/app/index.apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    }
+  ]
+}

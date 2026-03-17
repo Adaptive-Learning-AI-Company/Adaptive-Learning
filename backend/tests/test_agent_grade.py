@@ -60,8 +60,17 @@ class TestAgentGrade(unittest.TestCase):
 
         kg = KnowledgeGraph("english")
         
-        # Simulate "Current Node" = Printing_Letters
-        curr_node = kg.get_node("Language->Conventions->Grammar_K2->Printing_Letters")
+        # Pick any kindergarten-level concept from the current standards graph to
+        # simulate a stale node for a Grade 2 student.
+        stale_node_id = next(
+            (
+                node_id
+                for node_id, data in kg.graph.nodes(data=True)
+                if data.get("type") == "concept" and data.get("grade_level") == 0
+            ),
+            None,
+        )
+        curr_node = kg.get_node(stale_node_id)
         self.assertIsNotNone(curr_node)
         print(f"Current Stale Node: {curr_node.label} (G{curr_node.grade_level})")
         
@@ -78,9 +87,10 @@ class TestAgentGrade(unittest.TestCase):
         
         if should_reselect:
             candidates = kg.get_next_learnable_nodes([], target_grade=target_grade)
+            self.assertTrue(candidates)
             print(f"Re-selected: {candidates[0].label} (G{candidates[0].grade_level})")
             self.assertEqual(candidates[0].grade_level, 2)
-            self.assertNotEqual(candidates[0].label, "Printing_Letters")
+            self.assertNotEqual(candidates[0].id, curr_node.id)
 
 if __name__ == '__main__':
     unittest.main()

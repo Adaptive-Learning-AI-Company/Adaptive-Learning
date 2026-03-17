@@ -1,6 +1,12 @@
 extends Node3D
 
 const SUBJECT_ORDER := ["Math", "Science", "History", "English"]
+const SUBJECT_API_KEY := {
+	"Math": "Math",
+	"Science": "Science",
+	"History": "Social_Studies",
+	"English": "ELA"
+}
 const SUBJECT_THEME := {
 	"Math": {
 		"base": Color(0.13, 0.47, 0.78),
@@ -35,6 +41,12 @@ const SHELF_LAYOUT := {
 	"English": Vector3(4.2, 0.0, 9.1)
 }
 const SHELF_FOCUS_POINT := Vector3(0.0, 0.0, 0.6)
+const BEACON_TEXT := {
+	"Math": "Pattern Lab",
+	"Science": "Discovery Wing",
+	"History": "Story Archive",
+	"English": "Language Studio"
+}
 
 var network_manager
 var player
@@ -43,18 +55,56 @@ var hud_xp: Label
 var hud_level: Label
 var hud_grade: Label
 var grade_gauge: TextureProgressBar
+var ui_canvas: CanvasLayer
 
 var grade_percent_label: Label
 var sidebar_panel: Panel
 var joystick_left: VirtualJoystick
 var joystick_right: VirtualJoystick
 var hud_role: Label
+var profile_window: Window
+var admin_window: Window
+var profile_email_input: LineEdit
+var profile_avatar_option: OptionButton
+var profile_openai_key_input: LineEdit
+var profile_clear_key_check: CheckBox
+var profile_key_hint_label: Label
+var profile_status_label: Label
+var billing_plan_label: Label
+var billing_usage_label: Label
+var billing_payment_label: Label
+var billing_access_label: Label
+var billing_access_code_input: LineEdit
+var billing_access_code_button: Button
+var billing_hosted_button: Button
+var billing_byok_button: Button
+var billing_manage_button: Button
+var admin_access_button: Button
+var admin_status_label: Label
+var admin_revoke_reason_input: LineEdit
+var admin_code_assigned_input: LineEdit
+var admin_code_plan_option: OptionButton
+var admin_code_days_input: LineEdit
+var admin_code_max_redemptions_input: LineEdit
+var admin_code_custom_input: LineEdit
+var admin_code_notes_input: LineEdit
+var admin_last_created_code_input: LineEdit
+var admin_grant_username_input: LineEdit
+var admin_grant_plan_option: OptionButton
+var admin_grant_days_input: LineEdit
+var admin_grant_notes_input: LineEdit
+var admin_filter_username_input: LineEdit
+var admin_code_list: ItemList
+var admin_grant_list: ItemList
+var admin_code_entries := []
+var admin_grant_entries := []
 
 var shelf_progress_bars := {}
 var shelf_progress_labels := {}
 var subject_selector_progress_labels := {}
 var sidebar_subject_progress_bars := {}
 var book_nodes := []
+var animated_hall_nodes := []
 
 var hover_target = null
 var focus_ring: MeshInstance3D
@@ -70,6 +120,7 @@ var selection_mode_label: Label
 var selection_clock := 0.0
 var profile_grade_level := 1
 var profile_role := "Student"
+var profile_is_admin := false
 
 func _ready():
 	randomize()
@@ -107,12 +158,13 @@ func _process(delta):
 		if joystick_right:
 			player.external_look_input = joystick_right.get_output()
 
+	_update_hall_animation(delta)
 	_update_books_animation(delta)
 	_update_selection_feedback(delta)
 
 func setup_ui():
-	var canvas = CanvasLayer.new()
-	add_child(canvas)
+	ui_canvas = CanvasLayer.new()
+	add_child(ui_canvas)
 
 	# Sidebar Background
 	sidebar_panel = Panel.new()
@@ -135,14 +187,14 @@ func setup_ui():
 	var style = StyleBoxFlat.new()
 	style.bg_color = Color(0.1, 0.1, 0.1, 0.9)
 	sidebar_panel.add_theme_stylebox_override("panel", style)
-	canvas.add_child(sidebar_panel)
+	ui_canvas.add_child(sidebar_panel)
 
 	# Menu Toggle Button (Always visible)
 	var menu_btn = Button.new()
 	menu_btn.text = "MENU"
 	menu_btn.position = Vector2(10, 10)
 	menu_btn.pressed.connect(_on_toggle_menu)
-	canvas.add_child(menu_btn)
+	ui_canvas.add_child(menu_btn)
 
 	# Add Joysticks (Always add if touch capability or override)
 	# Check feature "touchscreen"
@@ -168,7 +220,7 @@ func setup_ui():
 			joystick_left.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
 			joystick_left.position = Vector2(20, get_viewport().get_visible_rect().size.y - 270)
 
-			canvas.add_child(joystick_left)
+			ui_canvas.add_child(joystick_left)
 
 			joystick_right = joystick_scn.instantiate()
 			# Anchor Bottom Right
@@ -177,7 +229,7 @@ func setup_ui():
 			joystick_right.size = Vector2(250, 250)
 			joystick_right.position = Vector2(get_viewport().get_visible_rect().size.x - 270, get_viewport().get_visible_rect().size.y - 270)
 
-			canvas.add_child(joystick_right)
+			ui_canvas.add_child(joystick_right)
 
 	# Container with Margins
 	var mc = MarginContainer.new()
@@ -282,10 +334,25 @@ func setup_ui():
 	content_vbox.add_child(HSeparator.new())
 
 	# 4. Log Out / Edit Profile
+	var profile_btn = Button.new()
+	profile_btn.text = "Profile Settings"
+	profile_btn.pressed.connect(_on_profile_button_pressed)
+	content_vbox.add_child(profile_btn)
+
+	admin_access_button = Button.new()
+	admin_access_button.text = "Admin Access"
+	admin_access_button.visible = false
+	admin_access_button.pressed.connect(_on_admin_button_pressed)
+	content_vbox.add_child(admin_access_button)
+
 	var exit_btn = Button.new()
 	exit_btn.text = "Main Menu"
 	exit_btn.pressed.connect(func(): get_tree().change_scene_to_file("res://scenes/Startup.tscn"))
 	content_vbox.add_child(exit_btn)
+
+	_setup_profile_window()
+	_setup_admin_window()
+	_refresh_admin_visibility()
 
 	# Fetch Stats
 	fetch_stats()
@@ -305,8 +372,6 @@ func _create_img_tex(color, w, h):
 func fetch_stats():
 	var gm = get_node("/root/GameManager")
 	var data = {"username": gm.player_username}
-	# Reuse init_session struct for convenience or make empty request
-	# get_player_stats uses init_session struct for username
 	NetworkManager.post_request("/get_player_stats", data, _on_stats_received, func(code, err): print("Stats Error: " + err))
 
 func _on_stats_received(_code, response):
@@ -322,6 +387,13 @@ func _on_stats_received(_code, response):
 		if hud_role and stats.has("role"):
 			hud_role.text = "Role: " + str(stats["role"])
 			profile_role = str(stats["role"])
+		profile_is_admin = bool(stats.get("is_admin", str(profile_role).to_lower() == "admin"))
+		_refresh_admin_visibility()
+
+		if stats.has("avatar_id"):
+			GameManager.player_avatar_id = str(stats["avatar_id"])
+			if player and is_instance_valid(player):
+				player.apply_profile_avatar(GameManager.player_avatar_id)
 
 		if stats.has("grade_completion"):
 			var g_val = stats["grade_completion"]
@@ -331,14 +403,14 @@ func _on_stats_received(_code, response):
 				grade_percent_label.text = str(g_val) + "%"
 
 		for subject in SUBJECT_ORDER:
-			var sidebar_key = subject.to_lower()
+			var sidebar_key = SUBJECT_API_KEY.get(subject, subject)
 			if not sidebar_subject_progress_bars.has(subject):
 				continue
 			if stats.has(sidebar_key):
 				sidebar_subject_progress_bars[subject].value = clamp(float(stats[sidebar_key]), 0.0, 100.0)
 
 		for subject in SUBJECT_ORDER:
-			var key = subject.to_lower()
+			var key = SUBJECT_API_KEY.get(subject, subject)
 			if not stats.has(key):
 				continue
 
@@ -351,6 +423,928 @@ func _on_stats_received(_code, response):
 				subject_selector_progress_labels[subject].text = str(int(round(progress_val))) + "% complete"
 
 		_refresh_book_emphasis()
+
+
+func _setup_profile_window():
+	if ui_canvas == null:
+		return
+
+	profile_window = Window.new()
+	profile_window.title = "Profile Settings"
+	profile_window.size = Vector2i(520, 620)
+	profile_window.unresizable = false
+	profile_window.close_requested.connect(func(): profile_window.hide())
+	ui_canvas.add_child(profile_window)
+
+	var root = VBoxContainer.new()
+	root.name = "ProfileVBox"
+	root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.offset_left = 18
+	root.offset_top = 18
+	root.offset_right = -18
+	root.offset_bottom = -18
+	root.add_theme_constant_override("separation", 10)
+	profile_window.add_child(root)
+
+	var intro = Label.new()
+	intro.text = "Save a recovery email, switch avatars, bring your own OpenAI key, or manage your subscription."
+	intro.autowrap_mode = TextServer.AUTOWRAP_WORD
+	root.add_child(intro)
+
+	var email_label = Label.new()
+	email_label.text = "Recovery Email"
+	root.add_child(email_label)
+
+	profile_email_input = LineEdit.new()
+	profile_email_input.placeholder_text = "parent@example.com"
+	profile_email_input.clear_button_enabled = true
+	root.add_child(profile_email_input)
+
+	var avatar_label = Label.new()
+	avatar_label.text = "Avatar"
+	root.add_child(avatar_label)
+
+	profile_avatar_option = OptionButton.new()
+	profile_avatar_option.add_item("Girl Avatar", 0)
+	profile_avatar_option.add_item("Boy Avatar", 1)
+	root.add_child(profile_avatar_option)
+
+	var key_label = Label.new()
+	key_label.text = "OpenAI API Key"
+	root.add_child(key_label)
+
+	profile_openai_key_input = LineEdit.new()
+	profile_openai_key_input.placeholder_text = "Leave blank to keep current key"
+	profile_openai_key_input.secret = true
+	profile_openai_key_input.clear_button_enabled = true
+	root.add_child(profile_openai_key_input)
+
+	profile_key_hint_label = Label.new()
+	profile_key_hint_label.text = "No personal key saved."
+	profile_key_hint_label.modulate = Color(0.78, 0.85, 0.92, 0.82)
+	root.add_child(profile_key_hint_label)
+
+	profile_clear_key_check = CheckBox.new()
+	profile_clear_key_check.text = "Remove saved personal key"
+	root.add_child(profile_clear_key_check)
+
+	root.add_child(HSeparator.new())
+
+	var billing_title = Label.new()
+	billing_title.text = "Subscription"
+	billing_title.add_theme_font_size_override("font_size", 18)
+	root.add_child(billing_title)
+
+	billing_plan_label = Label.new()
+	billing_plan_label.text = "Subscription: loading..."
+	billing_plan_label.autowrap_mode = TextServer.AUTOWRAP_WORD
+	root.add_child(billing_plan_label)
+
+	billing_usage_label = Label.new()
+	billing_usage_label.text = "Usage: -"
+	billing_usage_label.autowrap_mode = TextServer.AUTOWRAP_WORD
+	root.add_child(billing_usage_label)
+
+	billing_payment_label = Label.new()
+	billing_payment_label.text = "Payment Method: -"
+	billing_payment_label.autowrap_mode = TextServer.AUTOWRAP_WORD
+	root.add_child(billing_payment_label)
+
+	billing_access_label = Label.new()
+	billing_access_label.text = ""
+	billing_access_label.autowrap_mode = TextServer.AUTOWRAP_WORD
+	root.add_child(billing_access_label)
+
+	var access_code_row = HBoxContainer.new()
+	access_code_row.add_theme_constant_override("separation", 8)
+	root.add_child(access_code_row)
+
+	billing_access_code_input = LineEdit.new()
+	billing_access_code_input.placeholder_text = "Redeem access code"
+	billing_access_code_input.secret = true
+	billing_access_code_input.clear_button_enabled = true
+	billing_access_code_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	access_code_row.add_child(billing_access_code_input)
+
+	billing_access_code_button = Button.new()
+	billing_access_code_button.text = "Redeem"
+	billing_access_code_button.pressed.connect(_redeem_profile_access_code)
+	access_code_row.add_child(billing_access_code_button)
+
+	var billing_button_box = VBoxContainer.new()
+	billing_button_box.add_theme_constant_override("separation", 6)
+	root.add_child(billing_button_box)
+
+	billing_hosted_button = Button.new()
+	billing_hosted_button.text = "Subscribe: Hosted AI"
+	billing_hosted_button.pressed.connect(_start_hosted_checkout)
+	billing_button_box.add_child(billing_hosted_button)
+
+	billing_byok_button = Button.new()
+	billing_byok_button.text = "Subscribe: Bring Your Own Key"
+	billing_byok_button.pressed.connect(_start_byok_checkout)
+	billing_button_box.add_child(billing_byok_button)
+
+	billing_manage_button = Button.new()
+	billing_manage_button.text = "Manage Billing"
+	billing_manage_button.pressed.connect(_open_billing_portal)
+	billing_button_box.add_child(billing_manage_button)
+
+	var button_row = HBoxContainer.new()
+	button_row.alignment = BoxContainer.ALIGNMENT_END
+	root.add_child(button_row)
+
+	var cancel_btn = Button.new()
+	cancel_btn.text = "Close"
+	cancel_btn.pressed.connect(func(): profile_window.hide())
+	button_row.add_child(cancel_btn)
+
+	var save_btn = Button.new()
+	save_btn.text = "Save"
+	save_btn.pressed.connect(_save_profile_settings)
+	button_row.add_child(save_btn)
+
+	profile_status_label = Label.new()
+	profile_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD
+	root.add_child(profile_status_label)
+
+
+func _is_admin_user() -> bool:
+	return profile_is_admin or str(profile_role).to_lower() == "admin"
+
+
+func _refresh_admin_visibility():
+	if admin_access_button:
+		admin_access_button.visible = _is_admin_user()
+
+
+func _create_admin_plan_option() -> OptionButton:
+	var option = OptionButton.new()
+	option.add_item("Hosted AI", 0)
+	option.add_item("Bring Your Own Key", 1)
+	return option
+
+
+func _admin_selected_plan_code(option: OptionButton) -> String:
+	return "byok_monthly" if option and option.selected == 1 else "hosted_monthly"
+
+
+func _setup_admin_window():
+	if ui_canvas == null:
+		return
+
+	admin_window = Window.new()
+	admin_window.title = "Admin Access Management"
+	admin_window.size = Vector2i(860, 760)
+	admin_window.unresizable = false
+	admin_window.close_requested.connect(func(): admin_window.hide())
+	ui_canvas.add_child(admin_window)
+
+	var scroll = ScrollContainer.new()
+	scroll.set_anchors_preset(Control.PRESET_FULL_RECT)
+	scroll.offset_left = 14
+	scroll.offset_top = 14
+	scroll.offset_right = -14
+	scroll.offset_bottom = -14
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	admin_window.add_child(scroll)
+
+	var root = VBoxContainer.new()
+	root.add_theme_constant_override("separation", 10)
+	root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(root)
+
+	var intro = Label.new()
+	intro.text = "Create access codes, grant direct evaluator access, review active grants, and revoke access without leaving the app."
+	intro.autowrap_mode = TextServer.AUTOWRAP_WORD
+	root.add_child(intro)
+
+	var code_title = Label.new()
+	code_title.text = "Create Access Code"
+	code_title.add_theme_font_size_override("font_size", 18)
+	root.add_child(code_title)
+
+	var code_grid = GridContainer.new()
+	code_grid.columns = 2
+	code_grid.add_theme_constant_override("h_separation", 12)
+	code_grid.add_theme_constant_override("v_separation", 6)
+	root.add_child(code_grid)
+
+	var assigned_label = Label.new()
+	assigned_label.text = "Assigned Username"
+	code_grid.add_child(assigned_label)
+	admin_code_assigned_input = LineEdit.new()
+	admin_code_assigned_input.placeholder_text = "blank = redeemable by any user"
+	code_grid.add_child(admin_code_assigned_input)
+
+	var code_plan_label = Label.new()
+	code_plan_label.text = "Plan"
+	code_grid.add_child(code_plan_label)
+	admin_code_plan_option = _create_admin_plan_option()
+	code_grid.add_child(admin_code_plan_option)
+
+	var code_days_label = Label.new()
+	code_days_label.text = "Expires In Days"
+	code_grid.add_child(code_days_label)
+	admin_code_days_input = LineEdit.new()
+	admin_code_days_input.placeholder_text = "blank = no expiry"
+	code_grid.add_child(admin_code_days_input)
+
+	var code_max_label = Label.new()
+	code_max_label.text = "Max Redemptions"
+	code_grid.add_child(code_max_label)
+	admin_code_max_redemptions_input = LineEdit.new()
+	admin_code_max_redemptions_input.text = "1"
+	code_grid.add_child(admin_code_max_redemptions_input)
+
+	var custom_code_label = Label.new()
+	custom_code_label.text = "Custom Code"
+	code_grid.add_child(custom_code_label)
+	admin_code_custom_input = LineEdit.new()
+	admin_code_custom_input.placeholder_text = "blank = auto-generate"
+	code_grid.add_child(admin_code_custom_input)
+
+	var code_notes_label = Label.new()
+	code_notes_label.text = "Notes"
+	code_grid.add_child(code_notes_label)
+	admin_code_notes_input = LineEdit.new()
+	admin_code_notes_input.placeholder_text = "Evaluator, launch partner, etc."
+	code_grid.add_child(admin_code_notes_input)
+
+	var code_button_row = HBoxContainer.new()
+	code_button_row.add_theme_constant_override("separation", 8)
+	root.add_child(code_button_row)
+
+	var create_code_button = Button.new()
+	create_code_button.text = "Create Access Code"
+	create_code_button.pressed.connect(_create_admin_access_code)
+	code_button_row.add_child(create_code_button)
+
+	var copy_code_button = Button.new()
+	copy_code_button.text = "Copy Last Code"
+	copy_code_button.pressed.connect(_copy_admin_code_to_clipboard)
+	code_button_row.add_child(copy_code_button)
+
+	admin_last_created_code_input = LineEdit.new()
+	admin_last_created_code_input.editable = false
+	admin_last_created_code_input.placeholder_text = "Newly created code appears here once"
+	root.add_child(admin_last_created_code_input)
+
+	root.add_child(HSeparator.new())
+
+	var grant_title = Label.new()
+	grant_title.text = "Grant Direct Access"
+	grant_title.add_theme_font_size_override("font_size", 18)
+	root.add_child(grant_title)
+
+	var grant_grid = GridContainer.new()
+	grant_grid.columns = 2
+	grant_grid.add_theme_constant_override("h_separation", 12)
+	grant_grid.add_theme_constant_override("v_separation", 6)
+	root.add_child(grant_grid)
+
+	var grant_user_label = Label.new()
+	grant_user_label.text = "Target Username"
+	grant_grid.add_child(grant_user_label)
+	admin_grant_username_input = LineEdit.new()
+	admin_grant_username_input.placeholder_text = "student123"
+	grant_grid.add_child(admin_grant_username_input)
+
+	var grant_plan_label = Label.new()
+	grant_plan_label.text = "Plan"
+	grant_grid.add_child(grant_plan_label)
+	admin_grant_plan_option = _create_admin_plan_option()
+	grant_grid.add_child(admin_grant_plan_option)
+
+	var grant_days_label = Label.new()
+	grant_days_label.text = "Expires In Days"
+	grant_grid.add_child(grant_days_label)
+	admin_grant_days_input = LineEdit.new()
+	admin_grant_days_input.placeholder_text = "blank = no expiry"
+	grant_grid.add_child(admin_grant_days_input)
+
+	var grant_notes_label = Label.new()
+	grant_notes_label.text = "Notes"
+	grant_grid.add_child(grant_notes_label)
+	admin_grant_notes_input = LineEdit.new()
+	admin_grant_notes_input.placeholder_text = "VC access, evaluator, partner"
+	grant_grid.add_child(admin_grant_notes_input)
+
+	var grant_button = Button.new()
+	grant_button.text = "Grant Access"
+	grant_button.pressed.connect(_grant_admin_access)
+	root.add_child(grant_button)
+
+	root.add_child(HSeparator.new())
+
+	var filter_title = Label.new()
+	filter_title.text = "Review And Revoke"
+	filter_title.add_theme_font_size_override("font_size", 18)
+	root.add_child(filter_title)
+
+	var filter_row = HBoxContainer.new()
+	filter_row.add_theme_constant_override("separation", 8)
+	root.add_child(filter_row)
+
+	admin_filter_username_input = LineEdit.new()
+	admin_filter_username_input.placeholder_text = "Filter by username (optional)"
+	admin_filter_username_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	filter_row.add_child(admin_filter_username_input)
+
+	var refresh_all_button = Button.new()
+	refresh_all_button.text = "Refresh"
+	refresh_all_button.pressed.connect(_refresh_admin_lists)
+	filter_row.add_child(refresh_all_button)
+
+	admin_revoke_reason_input = LineEdit.new()
+	admin_revoke_reason_input.placeholder_text = "Revocation reason (optional)"
+	root.add_child(admin_revoke_reason_input)
+
+	var code_list_label = Label.new()
+	code_list_label.text = "Access Codes"
+	root.add_child(code_list_label)
+
+	admin_code_list = ItemList.new()
+	admin_code_list.select_mode = ItemList.SELECT_SINGLE
+	admin_code_list.custom_minimum_size = Vector2(0, 170)
+	root.add_child(admin_code_list)
+
+	var revoke_code_button = Button.new()
+	revoke_code_button.text = "Revoke Selected Code"
+	revoke_code_button.pressed.connect(_revoke_selected_admin_code)
+	root.add_child(revoke_code_button)
+
+	var grant_list_label = Label.new()
+	grant_list_label.text = "Access Grants"
+	root.add_child(grant_list_label)
+
+	admin_grant_list = ItemList.new()
+	admin_grant_list.select_mode = ItemList.SELECT_SINGLE
+	admin_grant_list.custom_minimum_size = Vector2(0, 170)
+	root.add_child(admin_grant_list)
+
+	var revoke_grant_button = Button.new()
+	revoke_grant_button.text = "Revoke Selected Grant"
+	revoke_grant_button.pressed.connect(_revoke_selected_admin_grant)
+	root.add_child(revoke_grant_button)
+
+	admin_status_label = Label.new()
+	admin_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD
+	root.add_child(admin_status_label)
+
+
+func _on_profile_button_pressed():
+	if profile_window == null:
+		return
+
+	profile_status_label.text = "Loading profile..."
+	profile_window.popup_centered()
+	_fetch_profile()
+	_fetch_billing_status()
+
+
+func _on_admin_button_pressed():
+	if admin_window == null or not _is_admin_user():
+		return
+
+	admin_status_label.text = "Loading admin data..."
+	admin_window.popup_centered()
+	_refresh_admin_lists()
+
+
+func _fetch_profile():
+	var data = {"username": GameManager.player_username}
+	NetworkManager.post_request("/get_profile", data, _on_profile_loaded, func(code, err):
+		if profile_status_label:
+			profile_status_label.text = "Unable to load profile."
+	)
+
+
+func _on_profile_loaded(_code, response):
+	if response == null:
+		return
+
+	if profile_email_input:
+		profile_email_input.text = str(response.get("email", ""))
+
+	if profile_avatar_option:
+		var avatar_id = str(response.get("avatar_id", "schoolgirl"))
+		profile_avatar_option.selected = 1 if avatar_id == "schoolboy" else 0
+
+	if profile_key_hint_label:
+		if response.get("has_personal_openai_key", false):
+			var hint = str(response.get("openai_key_hint", "saved"))
+			profile_key_hint_label.text = "Saved personal key: " + hint
+		else:
+			profile_key_hint_label.text = "No personal key saved."
+
+	if profile_openai_key_input:
+		profile_openai_key_input.text = ""
+	if profile_clear_key_check:
+		profile_clear_key_check.button_pressed = false
+	if profile_status_label:
+		profile_status_label.text = ""
+
+
+func _fetch_billing_status():
+	var data = {"username": GameManager.player_username}
+	NetworkManager.post_request("/get_billing_status", data, _on_billing_loaded, func(code, err):
+		if billing_access_label:
+			billing_access_label.text = "Billing status unavailable."
+	)
+
+
+func _find_plan_summary(response: Dictionary, plan_code: String) -> Dictionary:
+	for plan in response.get("plans", []):
+		if str(plan.get("plan_code", "")) == plan_code:
+			return plan
+	return {}
+
+
+func _format_price_cents(price_cents) -> String:
+	return "$%.2f/mo" % (float(price_cents) / 100.0)
+
+
+func _format_currency_cents(price_cents) -> String:
+	return "$%.2f" % (float(price_cents) / 100.0)
+
+
+func _format_cap_usage(used_value, cap_value) -> String:
+	if cap_value == null:
+		return str(used_value)
+	return str(used_value) + "/" + str(cap_value)
+
+
+func _on_billing_loaded(_code, response):
+	if response == null:
+		return
+
+	var subscription_plan_code = str(response.get("subscription_plan_code", ""))
+	var subscription_status = str(response.get("subscription_status", "inactive"))
+	var effective_plan_code = str(response.get("effective_plan_code", subscription_plan_code))
+	var current_plan = _find_plan_summary(response, effective_plan_code)
+	var recommended_plan_code = str(response.get("recommended_plan_code", ""))
+	var recommended_plan = _find_plan_summary(response, recommended_plan_code)
+	var usage = response.get("usage", {})
+	var access_source_label = str(response.get("access_source_label", ""))
+	var access_source_type = str(response.get("access_source_type", ""))
+	var active_subscription = subscription_plan_code != "" and subscription_status in ["active", "trialing", "past_due"]
+
+	if billing_plan_label:
+		if effective_plan_code == "":
+			var recommended_name = str(recommended_plan.get("display_name", "No plan selected"))
+			var recommended_price = ""
+			if recommended_plan.has("monthly_price_cents"):
+				recommended_price = " Recommended: " + recommended_name + " (" + _format_price_cents(recommended_plan["monthly_price_cents"]) + ")."
+			billing_plan_label.text = "Subscription: none." + recommended_price
+		else:
+			var display_name = str(current_plan.get("display_name", effective_plan_code))
+			var price_text = ""
+			if current_plan.has("monthly_price_cents"):
+				price_text = " " + _format_price_cents(current_plan["monthly_price_cents"])
+			if access_source_type != "" and access_source_type != "subscription":
+				billing_plan_label.text = "Access Plan: " + display_name + " via " + access_source_label + price_text
+			else:
+				billing_plan_label.text = "Subscription: " + display_name + " [" + subscription_status + "]" + price_text
+
+	if billing_usage_label:
+		var turns_text = _format_cap_usage(int(usage.get("tutor_turns_used", 0)), current_plan.get("monthly_tutor_turn_cap", null))
+		var calls_text = _format_cap_usage(int(usage.get("llm_calls_used", 0)), current_plan.get("monthly_llm_call_cap", null))
+		var cost_used = int(usage.get("estimated_cost_cents", 0))
+		var cost_cap = current_plan.get("monthly_cost_cap_cents", null)
+		var cost_text = _format_currency_cents(cost_used)
+		if cost_cap != null:
+			cost_text += " / " + _format_currency_cents(cost_cap)
+		var model_text = str(response.get("active_hosted_model", ""))
+		var usage_text = "Usage: turns " + turns_text + " | calls " + calls_text + " | hosted cost " + cost_text
+		if model_text != "":
+			usage_text += " | model " + model_text
+		billing_usage_label.text = usage_text
+
+	if billing_payment_label:
+		var brand = str(response.get("payment_method_brand", ""))
+		var last4 = str(response.get("payment_method_last4", ""))
+		if brand != "" and last4 != "":
+			billing_payment_label.text = "Payment Method: " + brand.capitalize() + " ending in " + last4
+		else:
+			billing_payment_label.text = "Payment Method: not available yet"
+
+	if billing_access_label:
+		if response.get("access_allowed", true):
+			var access_message = "Tutoring access is active."
+			if access_source_label != "":
+				access_message = "Tutoring access is active via " + access_source_label + "."
+			var grant_expires_at = response.get("access_grant_expires_at", null)
+			if grant_expires_at != null and str(grant_expires_at) != "":
+				access_message += " Expires: " + str(grant_expires_at) + "."
+			billing_access_label.text = access_message
+		else:
+			billing_access_label.text = str(response.get("access_reason", "Subscription required."))
+
+	if billing_hosted_button:
+		billing_hosted_button.disabled = not bool(response.get("checkout_available", false)) or active_subscription
+	if billing_byok_button:
+		billing_byok_button.disabled = not bool(response.get("checkout_available", false)) or active_subscription or not bool(response.get("uses_personal_key", false))
+	if billing_manage_button:
+		billing_manage_button.disabled = not bool(response.get("portal_available", false))
+
+
+func _redeem_profile_access_code():
+	if profile_status_label == null or billing_access_code_input == null:
+		return
+
+	var code_text = billing_access_code_input.text.strip_edges()
+	if code_text == "":
+		profile_status_label.text = "Enter an access code first."
+		return
+
+	if billing_access_code_button:
+		billing_access_code_button.disabled = true
+	profile_status_label.text = "Redeeming access code..."
+
+	var payload = {
+		"username": GameManager.player_username,
+		"code": code_text
+	}
+	NetworkManager.post_request("/redeem_access_code", payload, func(_code, response):
+		if billing_access_code_input:
+			billing_access_code_input.text = ""
+		if billing_access_code_button:
+			billing_access_code_button.disabled = false
+		profile_status_label.text = str(response.get("message", "Access code accepted."))
+		_fetch_billing_status()
+	, func(code, err):
+		if billing_access_code_button:
+			billing_access_code_button.disabled = false
+		profile_status_label.text = err if err != "" else "Unable to redeem access code."
+	)
+
+
+func _admin_parse_optional_positive_int(input: LineEdit, field_name: String) -> Dictionary:
+	if input == null:
+		return {"ok": true, "value": null}
+
+	var trimmed = input.text.strip_edges()
+	if trimmed == "":
+		return {"ok": true, "value": null}
+	if not trimmed.is_valid_int():
+		return {"ok": false, "message": field_name + " must be a whole number."}
+
+	var value = int(trimmed)
+	if value < 1:
+		return {"ok": false, "message": field_name + " must be at least 1."}
+	return {"ok": true, "value": value}
+
+
+func _admin_parse_required_positive_int(input: LineEdit, field_name: String, fallback: int) -> Dictionary:
+	if input == null:
+		return {"ok": true, "value": fallback}
+
+	var trimmed = input.text.strip_edges()
+	if trimmed == "":
+		return {"ok": true, "value": fallback}
+	if not trimmed.is_valid_int():
+		return {"ok": false, "message": field_name + " must be a whole number."}
+
+	var value = int(trimmed)
+	if value < 1:
+		return {"ok": false, "message": field_name + " must be at least 1."}
+	return {"ok": true, "value": value}
+
+
+func _copy_admin_code_to_clipboard():
+	if admin_last_created_code_input == null or admin_status_label == null:
+		return
+	if admin_last_created_code_input.text.strip_edges() == "":
+		admin_status_label.text = "No code available to copy yet."
+		return
+	DisplayServer.clipboard_set(admin_last_created_code_input.text)
+	admin_status_label.text = "Last created code copied to clipboard."
+
+
+func _create_admin_access_code():
+	if not _is_admin_user() or admin_status_label == null:
+		return
+
+	var days_result = _admin_parse_optional_positive_int(admin_code_days_input, "Expires in days")
+	if not bool(days_result.get("ok", false)):
+		admin_status_label.text = str(days_result.get("message", "Invalid expiration"))
+		return
+
+	var redemptions_result = _admin_parse_required_positive_int(admin_code_max_redemptions_input, "Max redemptions", 1)
+	if not bool(redemptions_result.get("ok", false)):
+		admin_status_label.text = str(redemptions_result.get("message", "Invalid max redemptions"))
+		return
+
+	admin_status_label.text = "Creating access code..."
+	var payload = {
+		"username": GameManager.player_username,
+		"plan_code": _admin_selected_plan_code(admin_code_plan_option),
+		"assigned_username": admin_code_assigned_input.text.strip_edges(),
+		"duration_days": days_result.get("value"),
+		"max_redemptions": int(redemptions_result.get("value", 1)),
+		"notes": admin_code_notes_input.text.strip_edges()
+	}
+	var custom_code = admin_code_custom_input.text.strip_edges()
+	if custom_code != "":
+		payload["code"] = custom_code
+
+	NetworkManager.post_request("/admin/create_access_code", payload, func(_code, response):
+		var promo_code = response.get("promo_code", {})
+		var assigned_username_value = promo_code.get("assigned_username", null)
+		var assigned_username = "general use" if assigned_username_value == null or str(assigned_username_value) == "" else str(assigned_username_value)
+		if admin_last_created_code_input:
+			admin_last_created_code_input.text = str(response.get("code", ""))
+		if admin_status_label:
+			admin_status_label.text = "Created access code for " + assigned_username + "."
+		if admin_code_custom_input:
+			admin_code_custom_input.text = ""
+		if admin_code_notes_input:
+			admin_code_notes_input.text = ""
+		_refresh_admin_lists()
+	, func(code, err):
+		if admin_status_label:
+			admin_status_label.text = err if err != "" else "Unable to create access code."
+	)
+
+
+func _grant_admin_access():
+	if not _is_admin_user() or admin_status_label == null:
+		return
+
+	var target_username = admin_grant_username_input.text.strip_edges() if admin_grant_username_input else ""
+	if target_username == "":
+		admin_status_label.text = "Target username is required."
+		return
+
+	var days_result = _admin_parse_optional_positive_int(admin_grant_days_input, "Expires in days")
+	if not bool(days_result.get("ok", false)):
+		admin_status_label.text = str(days_result.get("message", "Invalid expiration"))
+		return
+
+	admin_status_label.text = "Granting access..."
+	var payload = {
+		"username": GameManager.player_username,
+		"target_username": target_username,
+		"plan_code": _admin_selected_plan_code(admin_grant_plan_option),
+		"duration_days": days_result.get("value"),
+		"notes": admin_grant_notes_input.text.strip_edges()
+	}
+	NetworkManager.post_request("/admin/grant_access", payload, func(_code, response):
+		if admin_status_label:
+			admin_status_label.text = "Granted access to " + str(response.get("username", target_username)) + "."
+		if admin_grant_notes_input:
+			admin_grant_notes_input.text = ""
+		_refresh_admin_lists()
+	, func(code, err):
+		if admin_status_label:
+			admin_status_label.text = err if err != "" else "Unable to grant access."
+	)
+
+
+func _refresh_admin_lists():
+	if not _is_admin_user():
+		return
+	_refresh_admin_code_list()
+	_refresh_admin_grant_list()
+
+
+func _refresh_admin_code_list():
+	if admin_code_list == null:
+		return
+
+	var payload = {
+		"username": GameManager.player_username,
+		"assigned_username": admin_filter_username_input.text.strip_edges() if admin_filter_username_input else "",
+		"include_revoked": false
+	}
+	NetworkManager.post_request("/admin/list_access_codes", payload, _on_admin_codes_loaded, func(code, err):
+		if admin_status_label:
+			admin_status_label.text = err if err != "" else "Unable to load access codes."
+	)
+
+
+func _refresh_admin_grant_list():
+	if admin_grant_list == null:
+		return
+
+	var payload = {
+		"username": GameManager.player_username,
+		"target_username": admin_filter_username_input.text.strip_edges() if admin_filter_username_input else "",
+		"include_revoked": false
+	}
+	NetworkManager.post_request("/admin/list_access_grants", payload, _on_admin_grants_loaded, func(code, err):
+		if admin_status_label:
+			admin_status_label.text = err if err != "" else "Unable to load access grants."
+	)
+
+
+func _on_admin_codes_loaded(_code, response):
+	admin_code_entries = response.get("promo_codes", [])
+	if admin_code_list == null:
+		return
+
+	admin_code_list.clear()
+	for entry in admin_code_entries:
+		admin_code_list.add_item(_format_admin_code_entry(entry))
+	if admin_code_entries.is_empty():
+		admin_code_list.add_item("No matching active access codes.")
+
+
+func _on_admin_grants_loaded(_code, response):
+	admin_grant_entries = response.get("grants", [])
+	if admin_grant_list == null:
+		return
+
+	admin_grant_list.clear()
+	for entry in admin_grant_entries:
+		admin_grant_list.add_item(_format_admin_grant_entry(entry))
+	if admin_grant_entries.is_empty():
+		admin_grant_list.add_item("No matching active access grants.")
+
+
+func _format_admin_code_entry(entry: Dictionary) -> String:
+	var code_prefix = str(entry.get("code_prefix", ""))
+	var assigned_username_value = entry.get("assigned_username", null)
+	var assigned_username = "" if assigned_username_value == null else str(assigned_username_value)
+	if assigned_username == "":
+		assigned_username = "any user"
+	var plan_code = str(entry.get("plan_code", ""))
+	var max_redemptions = int(entry.get("max_redemptions", 1))
+	var redemption_count = int(entry.get("redemption_count", 0))
+	var expires_at = entry.get("expires_at", null)
+	var expires_text = "no expiry" if expires_at == null or str(expires_at) == "" else str(expires_at)
+	return "#" + str(entry.get("id", 0)) + " " + code_prefix + " -> " + assigned_username + " | " + plan_code + " | " + str(redemption_count) + "/" + str(max_redemptions) + " | " + expires_text
+
+
+func _format_admin_grant_entry(entry: Dictionary) -> String:
+	var username = str(entry.get("username", ""))
+	var plan_code = str(entry.get("plan_code", ""))
+	var source_type = str(entry.get("source_type", "manual"))
+	var expires_at = entry.get("expires_at", null)
+	var expires_text = "no expiry" if expires_at == null or str(expires_at) == "" else str(expires_at)
+	return "#" + str(entry.get("id", 0)) + " " + username + " | " + plan_code + " | " + source_type + " | " + expires_text
+
+
+func _revoke_selected_admin_code():
+	if admin_code_list == null or admin_status_label == null:
+		return
+
+	var selected = admin_code_list.get_selected_items()
+	if selected.size() == 0 or admin_code_entries.is_empty():
+		admin_status_label.text = "Select an access code first."
+		return
+
+	var index = int(selected[0])
+	if index < 0 or index >= admin_code_entries.size():
+		admin_status_label.text = "Select a valid access code."
+		return
+
+	var entry = admin_code_entries[index]
+	var payload = {
+		"username": GameManager.player_username,
+		"promo_code_id": int(entry.get("id", 0)),
+		"reason": admin_revoke_reason_input.text.strip_edges() if admin_revoke_reason_input else "",
+		"revoke_grants": true
+	}
+	admin_status_label.text = "Revoking access code..."
+	NetworkManager.post_request("/admin/revoke_access_code", payload, func(_code, response):
+		admin_status_label.text = "Revoked access code #" + str(response.get("id", 0)) + "."
+		_refresh_admin_lists()
+	, func(code, err):
+		admin_status_label.text = err if err != "" else "Unable to revoke access code."
+	)
+
+
+func _revoke_selected_admin_grant():
+	if admin_grant_list == null or admin_status_label == null:
+		return
+
+	var selected = admin_grant_list.get_selected_items()
+	if selected.size() == 0 or admin_grant_entries.is_empty():
+		admin_status_label.text = "Select an access grant first."
+		return
+
+	var index = int(selected[0])
+	if index < 0 or index >= admin_grant_entries.size():
+		admin_status_label.text = "Select a valid access grant."
+		return
+
+	var entry = admin_grant_entries[index]
+	var payload = {
+		"username": GameManager.player_username,
+		"access_grant_id": int(entry.get("id", 0)),
+		"reason": admin_revoke_reason_input.text.strip_edges() if admin_revoke_reason_input else ""
+	}
+	admin_status_label.text = "Revoking access grant..."
+	NetworkManager.post_request("/admin/revoke_access_grant", payload, func(_code, response):
+		admin_status_label.text = "Revoked access grant #" + str(response.get("id", 0)) + "."
+		_refresh_admin_lists()
+	, func(code, err):
+		admin_status_label.text = err if err != "" else "Unable to revoke access grant."
+	)
+
+
+func _start_hosted_checkout():
+	_start_checkout("hosted_monthly")
+
+
+func _start_byok_checkout():
+	_start_checkout("byok_monthly")
+
+
+func _start_checkout(plan_code: String):
+	if profile_status_label == null:
+		return
+
+	profile_status_label.text = "Opening secure checkout..."
+	var payload = {
+		"username": GameManager.player_username,
+		"plan_code": plan_code
+	}
+	NetworkManager.post_request("/create_checkout_session", payload, _on_checkout_session_created, func(code, err):
+		if profile_status_label:
+			profile_status_label.text = "Unable to open checkout."
+	)
+
+
+func _on_checkout_session_created(_code, response):
+	if response == null:
+		return
+
+	var url = str(response.get("url", ""))
+	if url != "":
+		OS.shell_open(url)
+		if profile_status_label:
+			profile_status_label.text = "Checkout opened in your browser."
+
+
+func _open_billing_portal():
+	if profile_status_label == null:
+		return
+
+	profile_status_label.text = "Opening billing portal..."
+	var payload = {"username": GameManager.player_username}
+	NetworkManager.post_request("/create_billing_portal_session", payload, _on_billing_portal_created, func(code, err):
+		if profile_status_label:
+			profile_status_label.text = "Unable to open billing portal."
+	)
+
+
+func _on_billing_portal_created(_code, response):
+	if response == null:
+		return
+
+	var url = str(response.get("url", ""))
+	if url != "":
+		OS.shell_open(url)
+		if profile_status_label:
+			profile_status_label.text = "Billing portal opened in your browser."
+
+
+func _save_profile_settings():
+	if profile_status_label == null:
+		return
+
+	profile_status_label.text = "Saving profile..."
+
+	var payload = {
+		"username": GameManager.player_username,
+		"email": profile_email_input.text.strip_edges(),
+		"avatar_id": "schoolboy" if profile_avatar_option.selected == 1 else "schoolgirl",
+		"openai_api_key": profile_openai_key_input.text.strip_edges(),
+		"clear_openai_api_key": profile_clear_key_check.button_pressed
+	}
+
+	NetworkManager.post_request("/update_profile", payload, _on_profile_saved, func(code, err):
+		if profile_status_label:
+			profile_status_label.text = "Save failed."
+	)
+
+
+func _on_profile_saved(_code, response):
+	if response == null:
+		return
+
+	GameManager.player_avatar_id = str(response.get("avatar_id", "schoolgirl"))
+	if player and is_instance_valid(player):
+		player.apply_profile_avatar(GameManager.player_avatar_id)
+
+	if profile_key_hint_label:
+		if response.get("has_personal_openai_key", false):
+			profile_key_hint_label.text = "Saved personal key: " + str(response.get("openai_key_hint", "saved"))
+		else:
+			profile_key_hint_label.text = "No personal key saved."
+
+	if profile_openai_key_input:
+		profile_openai_key_input.text = ""
+	if profile_clear_key_check:
+		profile_clear_key_check.button_pressed = false
+	if profile_status_label:
+		profile_status_label.text = "Profile updated."
+
+	fetch_stats()
+	_fetch_billing_status()
 
 func setup_full_library():
 	print("Loading Library Asset from: res://assets/models/Library/library.glb")
@@ -405,6 +1399,8 @@ func setup_full_library():
 	entry_fill.light_color = Color(1.0, 0.9, 0.78)
 	add_child(entry_fill)
 
+	_setup_grand_hall()
+
 	# Subject sections
 	# Compact cluster near the spawn lane so all shelves stay visible and navigable.
 	for subject in SUBJECT_ORDER:
@@ -414,9 +1410,212 @@ func setup_full_library():
 		var shelf_yaw = _yaw_toward_point(shelf_pos, SHELF_FOCUS_POINT)
 		setup_section(subject, shelf_pos, shelf_yaw)
 
+	_setup_subject_beacons()
 	setup_college_portal()
 	_setup_focus_ring()
 	_setup_selection_hud()
+
+
+func _setup_grand_hall():
+	var central_plaza = Node3D.new()
+	central_plaza.name = "CentralPlaza"
+	central_plaza.position = Vector3(0.0, 0.02, 2.35)
+	add_child(central_plaza)
+
+	var floor_disc = MeshInstance3D.new()
+	var disc_mesh = CylinderMesh.new()
+	disc_mesh.top_radius = 2.55
+	disc_mesh.bottom_radius = 2.75
+	disc_mesh.height = 0.08
+	floor_disc.mesh = disc_mesh
+	var disc_mat = _build_material(Color(0.08, 0.1, 0.14), 0.18, 0.02)
+	disc_mat.emission_enabled = true
+	disc_mat.emission = Color(0.3, 0.56, 0.92)
+	disc_mat.emission_energy_multiplier = 0.45
+	floor_disc.material_override = disc_mat
+	central_plaza.add_child(floor_disc)
+
+	var inner_ring = MeshInstance3D.new()
+	var ring_mesh = CylinderMesh.new()
+	ring_mesh.top_radius = 1.9
+	ring_mesh.bottom_radius = 1.9
+	ring_mesh.height = 0.02
+	inner_ring.mesh = ring_mesh
+	inner_ring.position = Vector3(0.0, 0.06, 0.0)
+	var ring_mat = _build_material(Color(0.62, 0.86, 1.0), 0.08, 0.0)
+	ring_mat.emission_enabled = true
+	ring_mat.emission = Color(0.62, 0.86, 1.0)
+	ring_mat.emission_energy_multiplier = 1.0
+	inner_ring.material_override = ring_mat
+	central_plaza.add_child(inner_ring)
+	_register_animated_hall_node(inner_ring, "pulse")
+
+	var title = Label3D.new()
+	title.text = "ADAPTIVE TUTOR"
+	title.font_size = 96
+	title.outline_size = 18
+	title.position = Vector3(0.0, 2.8, 1.1)
+	title.modulate = Color(0.96, 0.98, 1.0, 0.98)
+	add_child(title)
+	_register_animated_hall_node(title, "float")
+
+	var subtitle = Label3D.new()
+	subtitle.text = "Choose a shelf or resume your path from the center aisle"
+	subtitle.font_size = 34
+	subtitle.outline_size = 8
+	subtitle.position = Vector3(0.0, 2.2, 1.18)
+	subtitle.modulate = Color(0.74, 0.85, 0.98, 0.92)
+	add_child(subtitle)
+	_register_animated_hall_node(subtitle, "float")
+
+	var beacon = MeshInstance3D.new()
+	var beacon_mesh = SphereMesh.new()
+	beacon_mesh.radius = 0.26
+	beacon_mesh.height = 0.52
+	beacon.mesh = beacon_mesh
+	beacon.position = Vector3(0.0, 1.15, 0.0)
+	var beacon_mat = _build_material(Color(0.78, 0.92, 1.0), 0.05, 0.0)
+	beacon_mat.emission_enabled = true
+	beacon_mat.emission = Color(0.58, 0.86, 1.0)
+	beacon_mat.emission_energy_multiplier = 1.4
+	beacon.material_override = beacon_mat
+	central_plaza.add_child(beacon)
+	_register_animated_hall_node(beacon, "hover")
+
+	var beacon_light = OmniLight3D.new()
+	beacon_light.position = Vector3(0.0, 1.35, 0.0)
+	beacon_light.omni_range = 7.5
+	beacon_light.light_energy = 2.2
+	beacon_light.light_color = Color(0.68, 0.88, 1.0)
+	central_plaza.add_child(beacon_light)
+
+	for subject in SUBJECT_ORDER:
+		var accent = _subject_theme(subject)["accent"]
+		_create_floor_ribbon(Vector3(0.0, 0.03, 2.35), SHELF_LAYOUT[subject] + Vector3(0.0, 0.03, 0.9), accent)
+
+
+func _setup_subject_beacons():
+	for subject in SUBJECT_ORDER:
+		if not SHELF_LAYOUT.has(subject):
+			continue
+
+		var theme = _subject_theme(subject)
+		var accent: Color = theme["accent"]
+		var base: Color = theme["base"]
+		var anchor = SHELF_LAYOUT[subject] + Vector3(0.0, 0.0, 2.05)
+
+		var mast = MeshInstance3D.new()
+		var mast_mesh = CylinderMesh.new()
+		mast_mesh.top_radius = 0.09
+		mast_mesh.bottom_radius = 0.12
+		mast_mesh.height = 3.4
+		mast.mesh = mast_mesh
+		mast.position = anchor + Vector3(0.0, 1.7, 0.0)
+		var mast_mat = _build_material(base.darkened(0.32), 0.2, 0.05)
+		mast_mat.emission_enabled = true
+		mast_mat.emission = accent * 0.28
+		mast_mat.emission_energy_multiplier = 0.55
+		mast.material_override = mast_mat
+		add_child(mast)
+
+		var halo = MeshInstance3D.new()
+		var halo_mesh = CylinderMesh.new()
+		halo_mesh.top_radius = 0.58
+		halo_mesh.bottom_radius = 0.58
+		halo_mesh.height = 0.05
+		halo.mesh = halo_mesh
+		halo.position = anchor + Vector3(0.0, 2.7, 0.0)
+		var halo_mat = _build_material(accent, 0.04, 0.0)
+		halo_mat.emission_enabled = true
+		halo_mat.emission = accent
+		halo_mat.emission_energy_multiplier = 1.25
+		halo.material_override = halo_mat
+		add_child(halo)
+		_register_animated_hall_node(halo, "ring")
+
+		var orb = MeshInstance3D.new()
+		var orb_mesh = SphereMesh.new()
+		orb_mesh.radius = 0.18
+		orb_mesh.height = 0.36
+		orb.mesh = orb_mesh
+		orb.position = anchor + Vector3(0.0, 3.05, 0.0)
+		var orb_mat = _build_material(accent.lightened(0.2), 0.03, 0.0)
+		orb_mat.emission_enabled = true
+		orb_mat.emission = accent
+		orb_mat.emission_energy_multiplier = 1.6
+		orb.material_override = orb_mat
+		add_child(orb)
+		_register_animated_hall_node(orb, "hover")
+
+		var sign = Label3D.new()
+		sign.text = subject.to_upper() + "\n" + BEACON_TEXT[subject]
+		sign.font_size = 36
+		sign.outline_size = 10
+		sign.position = anchor + Vector3(0.0, 3.65, 0.0)
+		sign.modulate = Color(1.0, 1.0, 1.0, 0.95)
+		add_child(sign)
+		_register_animated_hall_node(sign, "float")
+
+
+func _create_floor_ribbon(from: Vector3, to: Vector3, accent: Color):
+	var ribbon = MeshInstance3D.new()
+	var ribbon_mesh = BoxMesh.new()
+	var ribbon_length = from.distance_to(to)
+	ribbon_mesh.size = Vector3(0.24, 0.03, ribbon_length)
+	ribbon.mesh = ribbon_mesh
+	ribbon.position = (from + to) * 0.5
+	ribbon.look_at(Vector3(to.x, ribbon.position.y, to.z), Vector3.UP)
+	ribbon.rotate_y(PI)
+	var ribbon_mat = _build_material(accent.darkened(0.22), 0.06, 0.0)
+	ribbon_mat.emission_enabled = true
+	ribbon_mat.emission = accent
+	ribbon_mat.emission_energy_multiplier = 0.9
+	ribbon.material_override = ribbon_mat
+	add_child(ribbon)
+	_register_animated_hall_node(ribbon, "pulse")
+
+
+func _register_animated_hall_node(node: Node, style: String):
+	if node == null:
+		return
+	node.set_meta("hall_anim_style", style)
+	if node is Node3D:
+		node.set_meta("hall_base_position", node.position)
+		node.set_meta("hall_base_scale", node.scale)
+	if node is Label3D:
+		node.set_meta("hall_base_modulate", node.modulate)
+	node.set_meta("hall_phase", randf() * TAU)
+	animated_hall_nodes.append(node)
+
+
+func _update_hall_animation(delta):
+	for hall_node in animated_hall_nodes:
+		if hall_node == null or not is_instance_valid(hall_node):
+			continue
+
+		var phase = float(hall_node.get_meta("hall_phase")) if hall_node.has_meta("hall_phase") else 0.0
+		var style = str(hall_node.get_meta("hall_anim_style")) if hall_node.has_meta("hall_anim_style") else "float"
+		var time_value = selection_clock + phase
+
+		if hall_node is Node3D and hall_node.has_meta("hall_base_position"):
+			var base_position: Vector3 = hall_node.get_meta("hall_base_position")
+			var base_scale: Vector3 = hall_node.get_meta("hall_base_scale") if hall_node.has_meta("hall_base_scale") else Vector3.ONE
+
+			match style:
+				"hover":
+					hall_node.position = base_position + Vector3(0.0, sin(time_value * 1.8) * 0.08, 0.0)
+				"ring":
+					hall_node.position = base_position + Vector3(0.0, sin(time_value * 1.2) * 0.04, 0.0)
+					hall_node.rotation.y += delta * 0.65
+					hall_node.scale = base_scale * (1.0 + sin(time_value * 2.2) * 0.04)
+				"pulse":
+					hall_node.scale = base_scale * (1.0 + sin(time_value * 2.8) * 0.035)
+				_:
+					hall_node.position = base_position + Vector3(0.0, sin(time_value * 1.1) * 0.05, 0.0)
+
+		if hall_node is Label3D and hall_node.has_meta("hall_base_modulate"):
+			var base_modulate: Color = hall_node.get_meta("hall_base_modulate")
+			hall_node.modulate = Color(base_modulate.r, base_modulate.g, base_modulate.b, clamp(base_modulate.a + sin(time_value * 1.6) * 0.08, 0.6, 1.0))
 
 func setup_section(category: String, pos: Vector3, rot_deg: float = 0.0):
 	var theme = _subject_theme(category)

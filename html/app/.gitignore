@@ -1,0 +1,3 @@
+# Generated browser bundle; keep the ignore file, not the export output.
+*
+!.gitignore

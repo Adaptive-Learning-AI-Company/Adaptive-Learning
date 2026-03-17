@@ -1,15 +1,21 @@
-from fastapi import FastAPI, HTTPException, Depends, Form
+from fastapi import FastAPI, HTTPException, Depends, Form, Request
+from fastapi.middleware.cors import CORSMiddleware
 from typing import List
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from contextlib import asynccontextmanager
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage
-from .models import InitRequest, ChatRequest, ChatResponse, BookSelectRequest, BookSelectResponse, InitSessionRequest, InitSessionResponse, ResumeShelfRequest, ResumeShelfResponse, PlayerStatsRequest, GraphDataRequest, GraphDataResponse, GraphNode, SetCurrentNodeRequest, RegisterRequest, LoginRequest, PasswordResetRequest
+from .models import InitRequest, ChatRequest, ChatResponse, BookSelectRequest, BookSelectResponse, InitSessionRequest, InitSessionResponse, ResumeShelfRequest, ResumeShelfResponse, PlayerStatsRequest, GraphDataRequest, GraphDataResponse, GraphNode, SetCurrentNodeRequest, RegisterRequest, LoginRequest, PasswordResetRequest, ProfileRequest, UpdateProfileRequest, ProfileResponse, BillingStatusRequest, BillingCheckoutRequest, BillingPortalRequest, BillingStatusResponse, BillingCheckoutResponse, BillingPortalResponse, RedeemAccessCodeRequest, RedeemAccessCodeResponse, CreatePromoCodeRequest, CreatePromoCodeResponse, GrantAccessRequest, RevokeAccessGrantRequest, RevokePromoCodeRequest, ListAccessGrantsRequest, ListPromoCodesRequest, AccessGrantSummary, PromoCodeSummary, AccessGrantListResponse, PromoCodeListResponse, NodeLinksRequest, NodeLinksResponse, SubmitNodeLinkRequest, SubmitNodeLinkResponse, ReviewNodeLinkRequest, PendingNodeLinksRequest, PendingNodeLinksResponse, NodeLinkSummary
 from .graph import create_graph
-from .database import init_db, get_db, Player, TopicProgress
+from .database import init_db, get_db, Player, TopicProgress, AuthSession
+from .config import load_local_env, normalize_avatar_id, normalize_account_status
+from .profile_security import encrypt_profile_secret, mask_secret
+from .billing import build_billing_status, create_checkout_session as create_billing_checkout_session, create_billing_portal_session, handle_stripe_webhook, assert_tutoring_access, increment_tutor_turn_usage
+from .access_grants import create_manual_access_grant, create_promo_code, list_access_grants, list_promo_codes, redeem_promo_code, revoke_access_grant, revoke_promo_code, serialize_access_grant, serialize_promo_code
+from .node_links import get_node_link_count_map, get_node_links_for_node, list_reviewable_node_links, review_node_link, serialize_node_link, submit_node_link
 import uuid
 import json
-from passlib.context import CryptContext
 from fastapi.responses import HTMLResponse
 from datetime import datetime, timedelta
 from jose import jwt, JWTError
@@ -17,8 +23,30 @@ from fastapi.security import OAuth2PasswordBearer
 import smtplib
 import ssl
 import os
+import html
+import re
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+
+try:
+    from passlib.context import CryptContext
+except ImportError:
+    import bcrypt
+
+    class CryptContext:  # type: ignore[override]
+        def __init__(self, schemes=None, deprecated="auto"):
+            self.schemes = schemes or ["bcrypt"]
+            self.deprecated = deprecated
+
+        def verify(self, plain_password, hashed_password):
+            if not plain_password or not hashed_password:
+                return False
+            return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
+
+        def hash(self, password):
+            return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+load_local_env()
 
 # Auth Setup
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -26,6 +54,23 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # We default to a placeholder for local dev but advise handling this carefully.
 SECRET_KEY = os.getenv("SECRET_KEY", "dev_secret_key_change_me") 
 ALGORITHM = "HS256"
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+SELF_SERVICE_ROLES = {"Student", "Teacher"}
+ADMIN_ROLE = "Admin"
+
+
+def _cors_allowed_origins() -> list[str]:
+    configured = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
+    if configured:
+        return [origin.strip() for origin in configured.split(",") if origin.strip()]
+    return [
+        "http://127.0.0.1:8000",
+        "http://localhost:8000",
+        "http://127.0.0.1:5500",
+        "http://localhost:5500",
+        "https://adaptivetutor.ai",
+        "https://www.adaptivetutor.ai",
+    ]
 
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
@@ -50,13 +95,185 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
+
+def _is_valid_email(value: str) -> bool:
+    trimmed = value.strip()
+    if "@" not in trimmed:
+        return False
+    local_part, _, domain = trimmed.partition("@")
+    return bool(local_part and domain and "." in domain)
+
+
+def _clean_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _topic_metadata_from_name(topic_name: str | None) -> tuple[str | None, int | None]:
+    if not topic_name:
+        return None, None
+
+    token = topic_name.strip().split(" ")[0].replace("-", "_")
+    normalized = token.lower()
+    subject_map = {
+        "math": "Math",
+        "science": "Science",
+        "history": "Social_Studies",
+        "social_studies": "Social_Studies",
+        "socialstudies": "Social_Studies",
+        "english": "ELA",
+        "ela": "ELA",
+    }
+    subject_key = subject_map.get(normalized, token)
+
+    level_match = re.search(r"(\d+)", topic_name)
+    level_value = int(level_match.group(1)) if level_match else None
+    return subject_key, level_value
+
+
+def _apply_topic_progress_metadata(progress: TopicProgress, topic_name: str):
+    subject_key, level_value = _topic_metadata_from_name(topic_name)
+    if subject_key:
+        progress.subject_key = subject_key
+    if level_value is not None:
+        progress.book_level = level_value
+        progress.content_grade_level = level_value
+
+
+def _build_profile_response(player: Player) -> ProfileResponse:
+    return ProfileResponse(
+        username=player.username,
+        display_name=player.display_name,
+        email=player.email,
+        avatar_id=normalize_avatar_id(player.avatar_id),
+        has_personal_openai_key=bool(player.openai_api_key_encrypted),
+        openai_key_hint=mask_secret(player.openai_api_key_encrypted),
+        account_status=normalize_account_status(player.account_status),
+        curriculum_region=player.curriculum_region,
+        preferred_model=player.preferred_model,
+        school_name=player.school_name,
+        district_name=player.district_name,
+        classroom_id=player.classroom_id,
+        roster_id=player.roster_id,
+        guardian_name=player.guardian_name,
+        guardian_email=player.guardian_email,
+        created_at=player.created_at,
+        updated_at=player.updated_at,
+        last_login_at=player.last_login_at,
+        email_verified_at=player.email_verified_at,
+        password_changed_at=player.password_changed_at,
+        last_password_reset_requested_at=player.last_password_reset_requested_at,
+        openai_api_key_updated_at=player.openai_api_key_updated_at,
+    )
+
+
+def _get_player_by_username(db: Session, username: str) -> Player:
+    player = db.query(Player).filter(Player.username == username).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="User not found")
+    return player
+
+
+def _resolve_expiration(expires_at: datetime | None, duration_days: int | None) -> datetime | None:
+    if expires_at is not None:
+        return expires_at
+    if duration_days is None:
+        return None
+    if duration_days < 1:
+        raise HTTPException(status_code=400, detail="duration_days must be at least 1.")
+    return datetime.utcnow() + timedelta(days=duration_days)
+
+
+def _ensure_current_user_matches(current_user: Player, username: str):
+    if current_user.username != username:
+        raise HTTPException(status_code=403, detail="Profile access denied")
+
+
+def _admin_usernames() -> set[str]:
+    return {
+        username.strip()
+        for username in os.getenv("ADMIN_USERNAMES", "").split(",")
+        if username.strip()
+    }
+
+
+def _is_admin_user(player: Player | None) -> bool:
+    if not player:
+        return False
+    return (player.role or "").strip() == ADMIN_ROLE or player.username in _admin_usernames()
+
+
+def _ensure_admin_user(player: Player):
+    if not _is_admin_user(player):
+        raise HTTPException(status_code=403, detail="Administrator access required")
+
+
+def _normalize_user_role(role: str | None, allow_admin: bool = False) -> str:
+    normalized = (role or "Student").strip().lower()
+    role_map = {"student": "Student", "teacher": "Teacher", "admin": "Admin"}
+    resolved = role_map.get(normalized, "Student")
+    if resolved == ADMIN_ROLE and not allow_admin:
+        raise HTTPException(status_code=403, detail="Administrator role cannot be self-assigned.")
+    return resolved if resolved in SELF_SERVICE_ROLES or resolved == ADMIN_ROLE else "Student"
+
+
+def _record_auth_session(
+    db: Session,
+    player: Player,
+    token_jti: str,
+    expires_at: datetime,
+    http_request: Request | None = None,
+):
+    if not token_jti:
+        return
+
+    auth_session = AuthSession(
+        player_id=player.id,
+        token_jti=token_jti,
+        user_agent=http_request.headers.get("user-agent") if http_request else None,
+        ip_address=http_request.client.host if http_request and http_request.client else None,
+        created_at=datetime.utcnow(),
+        last_seen_at=datetime.utcnow(),
+        expires_at=expires_at,
+    )
+    db.add(auth_session)
+
+
+def _update_auth_session_last_seen(db: Session, current_user: Player):
+    token_jti = getattr(current_user, "_token_jti", None)
+    if not token_jti:
+        return
+
+    auth_session = db.query(AuthSession).filter(AuthSession.token_jti == token_jti).first()
+    if auth_session:
+        auth_session.last_seen_at = datetime.utcnow()
+
+
+def _extract_usage_metrics(message) -> tuple[int | None, int | None]:
+    if message is None:
+        return None, None
+
+    usage = getattr(message, "usage_metadata", None) or {}
+    input_tokens = usage.get("input_tokens")
+    output_tokens = usage.get("output_tokens")
+
+    response_metadata = getattr(message, "response_metadata", None) or {}
+    token_usage = response_metadata.get("token_usage", {})
+    if input_tokens is None:
+        input_tokens = token_usage.get("prompt_tokens")
+    if output_tokens is None:
+        output_tokens = token_usage.get("completion_tokens")
+
+    return input_tokens, output_tokens
+
 # Real Email Sender (IONOS SMTP)
 # Real Email Sender (IONOS SMTP)
 def send_email_reset_link(to_email: str, link: str):
-    # Retrieve config from Environment Variables. No hardcoded defaults for security.
-    smtp_server = os.getenv("EMAIL_HOST") 
+    smtp_server = os.getenv("EMAIL_HOST", "smtp.ionos.com")
     smtp_port_str = os.getenv("EMAIL_PORT", "587")
-    sender_email = os.getenv("EMAIL_USER")
+    sender_email = os.getenv("EMAIL_USER", "admin@adaptivetutor.ai")
     password = os.getenv("EMAIL_PASSWORD")
     
     # Check if critical vars are present
@@ -142,6 +359,13 @@ async def lifespan(app: FastAPI):
     print("Shutting down.")
 
 app = FastAPI(lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_allowed_origins(),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Auth Configuration
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
@@ -160,10 +384,21 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
             raise credentials_exception
     except JWTError:
         raise credentials_exception
-        
+    
+    token_jti = payload.get("jti")
     user = db.query(Player).filter(Player.username == username).first()
     if user is None:
         raise credentials_exception
+    if token_jti:
+        auth_session = db.query(AuthSession).filter(AuthSession.token_jti == token_jti).first()
+        if (
+            auth_session is None
+            or auth_session.player_id != user.id
+            or auth_session.revoked_at is not None
+            or (auth_session.expires_at and auth_session.expires_at < datetime.utcnow())
+        ):
+            raise credentials_exception
+    user._token_jti = token_jti
     return user
 
 @app.api_route("/", methods=["GET", "HEAD"])
@@ -176,78 +411,406 @@ async def get_users_list(db: Session = Depends(get_db)):
     return get_all_users()
 
 @app.post("/get_player_stats")
-async def get_player_stats(request: PlayerStatsRequest, db: Session = Depends(get_db)):
-    # Calculate stats for all subjects for the Library UI
-    from .knowledge_graph import get_graph, get_all_subjects_stats
-    
+async def get_player_stats(request: PlayerStatsRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    from .knowledge_graph import get_all_subjects_stats, get_subject_completion_stats
+
+    _ensure_current_user_matches(current_user, request.username)
+    _update_auth_session_last_seen(db, current_user)
+
     player = db.query(Player).filter(Player.username == request.username).first()
     if not player:
         return {"stats": {}}
-        
+
     stats = {}
     subjects = ["Math", "Science", "Social_Studies", "ELA"]
-    
-    for subj in subjects:
-        # DB Topic Name (Capitalized)
-        db_topic = subj
 
-        
-        # Get Progress
-        prog = db.query(TopicProgress).filter(
-            TopicProgress.player_id == player.id,
-            TopicProgress.topic_name == db_topic
-        ).first()
-        
-        # Get KG
-        kg = get_graph(subj)
-        
-        done, total = 0, 0
-        if prog and prog.completed_nodes:
-            done, total = kg.get_completion_stats(prog.completed_nodes)
-            
-        percent = 0.0
-        if total > 0:
-            percent = round((done / total) * 100, 1)
-            
+    for subj in subjects:
+        done, total = get_subject_completion_stats(player.id, db, subj)
+        percent = round((done / total) * 100, 1) if total > 0 else 0.0
         stats[subj] = percent
-        
-    # Calculate Overall Grade Completion
+
     done_grade, total_grade = get_all_subjects_stats(player.id, db)
-    grade_percent = 0.0
-    if total_grade > 0:
-        grade_percent = round((done_grade / total_grade) * 100, 1)
-        
+    grade_percent = round((done_grade / total_grade) * 100, 1) if total_grade > 0 else 0.0
+
     stats["grade_completion"] = grade_percent
     stats["current_grade_level"] = player.grade_level
-    stats["role"] = player.role # [NEW]
-        
+    stats["role"] = player.role
+    stats["avatar_id"] = normalize_avatar_id(player.avatar_id)
+    stats["has_personal_openai_key"] = bool(player.openai_api_key_encrypted)
+    stats["openai_key_hint"] = mask_secret(player.openai_api_key_encrypted)
+    stats["display_name"] = player.display_name or player.username
+    stats["curriculum_region"] = player.curriculum_region
+    stats["is_admin"] = _is_admin_user(player)
     return {"stats": stats}
 
 @app.post("/register")
 async def register(request: RegisterRequest, db: Session = Depends(get_db)):
     print(f"[API] /register request received for: {request.username}")
-    # Check if user exists
-    existing = db.query(Player).filter(Player.username == request.username).first()
+    now = datetime.utcnow()
+    cleaned_username = request.username.strip()
+    cleaned_email = request.email.strip()
+
+    existing = db.query(Player).filter(Player.username == cleaned_username).first()
     if existing:
         raise HTTPException(status_code=400, detail="Username already registered")
-        
+
+    if not _is_valid_email(cleaned_email):
+        raise HTTPException(status_code=400, detail="A valid email is required for password recovery.")
+    if len(request.password.strip()) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+
+    guardian_email = _clean_optional_text(request.guardian_email)
+    if guardian_email and not _is_valid_email(guardian_email):
+        raise HTTPException(status_code=400, detail="Guardian email must be a valid email address.")
+
+    openai_key = _clean_optional_text(request.openai_api_key)
     hashed_pwd = get_password_hash(request.password)
-    
     player = Player(
-        username=request.username,
+        username=cleaned_username,
         password_hash=hashed_pwd,
-        email=request.email, # [NEW]
+        email=cleaned_email,
+        display_name=_clean_optional_text(request.display_name) or cleaned_username,
         grade_level=request.grade_level,
         location=request.location,
+        curriculum_region=_clean_optional_text(request.curriculum_region) or request.location,
         learning_style=request.learning_style,
         sex=request.sex,
-        role=request.role,
+        role=_normalize_user_role(request.role),
         birthday=request.birthday,
-        interests=request.interests
+        interests=request.interests,
+        avatar_id=normalize_avatar_id(request.avatar_id),
+        openai_api_key_encrypted=encrypt_profile_secret(openai_key),
+        preferred_model=_clean_optional_text(request.preferred_model),
+        school_name=_clean_optional_text(request.school_name),
+        district_name=_clean_optional_text(request.district_name),
+        classroom_id=_clean_optional_text(request.classroom_id),
+        roster_id=_clean_optional_text(request.roster_id),
+        guardian_name=_clean_optional_text(request.guardian_name),
+        guardian_email=guardian_email,
+        created_at=now,
+        updated_at=now,
+        password_changed_at=now,
+        openai_api_key_updated_at=now if openai_key else None,
     )
     db.add(player)
     db.commit()
     return {"message": "User created successfully"}
+
+
+@app.post("/get_profile", response_model=ProfileResponse)
+async def get_profile(request: ProfileRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_current_user_matches(current_user, request.username)
+    _update_auth_session_last_seen(db, current_user)
+
+    player = db.query(Player).filter(Player.username == request.username).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="User not found")
+    return _build_profile_response(player)
+
+
+@app.post("/get_billing_status", response_model=BillingStatusResponse)
+async def get_billing_status(request: BillingStatusRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_current_user_matches(current_user, request.username)
+    _update_auth_session_last_seen(db, current_user)
+
+    player = db.query(Player).filter(Player.username == request.username).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="User not found")
+    return BillingStatusResponse(**build_billing_status(db, player))
+
+
+@app.post("/create_checkout_session", response_model=BillingCheckoutResponse)
+async def create_checkout_session(request: BillingCheckoutRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_current_user_matches(current_user, request.username)
+    _update_auth_session_last_seen(db, current_user)
+
+    player = db.query(Player).filter(Player.username == request.username).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="User not found")
+    url = create_billing_checkout_session(db, player, request.plan_code)
+    return BillingCheckoutResponse(url=url)
+
+
+@app.post("/create_billing_portal_session", response_model=BillingPortalResponse)
+async def create_billing_portal(request: BillingPortalRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_current_user_matches(current_user, request.username)
+    _update_auth_session_last_seen(db, current_user)
+
+    player = db.query(Player).filter(Player.username == request.username).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="User not found")
+    url = create_billing_portal_session(db, player)
+    return BillingPortalResponse(url=url)
+
+
+@app.post("/redeem_access_code", response_model=RedeemAccessCodeResponse)
+async def redeem_access_code_endpoint(request: RedeemAccessCodeRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_current_user_matches(current_user, request.username)
+    _update_auth_session_last_seen(db, current_user)
+
+    player = _get_player_by_username(db, request.username)
+    _, grant, created = redeem_promo_code(db, player, request.code)
+    db.commit()
+    db.refresh(grant)
+    return RedeemAccessCodeResponse(
+        status="redeemed" if created else "already_active",
+        plan_code=grant.plan_code,
+        access_source_type=grant.source_type,
+        expires_at=grant.expires_at,
+        message="Access code accepted." if created else "Access code was already active for this user.",
+    )
+
+
+@app.post("/admin/create_access_code", response_model=CreatePromoCodeResponse)
+async def admin_create_access_code(request: CreatePromoCodeRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_current_user_matches(current_user, request.username)
+    _update_auth_session_last_seen(db, current_user)
+    _ensure_admin_user(current_user)
+
+    assigned_player = _get_player_by_username(db, request.assigned_username) if request.assigned_username else None
+    expires_at = _resolve_expiration(request.expires_at, request.duration_days)
+    promo_code, raw_code = create_promo_code(
+        db,
+        plan_code=request.plan_code,
+        assigned_player_id=assigned_player.id if assigned_player else None,
+        created_by_player_id=current_user.id,
+        starts_at=request.starts_at,
+        expires_at=expires_at,
+        max_redemptions=request.max_redemptions,
+        raw_code=request.code,
+        notes=_clean_optional_text(request.notes),
+        extra_metadata=request.extra_metadata,
+    )
+    db.commit()
+    db.refresh(promo_code)
+    return CreatePromoCodeResponse(
+        promo_code=PromoCodeSummary(**serialize_promo_code(promo_code)),
+        code=raw_code,
+    )
+
+
+@app.post("/admin/grant_access", response_model=AccessGrantSummary)
+async def admin_grant_access(request: GrantAccessRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_current_user_matches(current_user, request.username)
+    _update_auth_session_last_seen(db, current_user)
+    _ensure_admin_user(current_user)
+
+    target_player = _get_player_by_username(db, request.target_username)
+    expires_at = _resolve_expiration(request.expires_at, request.duration_days)
+    grant = create_manual_access_grant(
+        db,
+        player_id=target_player.id,
+        plan_code=request.plan_code,
+        created_by_player_id=current_user.id,
+        starts_at=request.starts_at,
+        expires_at=expires_at,
+        notes=_clean_optional_text(request.notes),
+        extra_metadata=request.extra_metadata,
+    )
+    db.commit()
+    db.refresh(grant)
+    return AccessGrantSummary(**serialize_access_grant(grant))
+
+
+@app.post("/admin/revoke_access_grant", response_model=AccessGrantSummary)
+async def admin_revoke_access_grant(request: RevokeAccessGrantRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_current_user_matches(current_user, request.username)
+    _update_auth_session_last_seen(db, current_user)
+    _ensure_admin_user(current_user)
+
+    grant = revoke_access_grant(db, request.access_grant_id, reason=_clean_optional_text(request.reason))
+    db.commit()
+    db.refresh(grant)
+    return AccessGrantSummary(**serialize_access_grant(grant))
+
+
+@app.post("/admin/revoke_access_code", response_model=PromoCodeSummary)
+async def admin_revoke_access_code(request: RevokePromoCodeRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_current_user_matches(current_user, request.username)
+    _update_auth_session_last_seen(db, current_user)
+    _ensure_admin_user(current_user)
+
+    promo_code = revoke_promo_code(
+        db,
+        request.promo_code_id,
+        reason=_clean_optional_text(request.reason),
+        revoke_linked_grants=bool(request.revoke_grants),
+    )
+    db.commit()
+    db.refresh(promo_code)
+    return PromoCodeSummary(**serialize_promo_code(promo_code))
+
+
+@app.post("/admin/list_access_grants", response_model=AccessGrantListResponse)
+async def admin_list_access_grants(request: ListAccessGrantsRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_current_user_matches(current_user, request.username)
+    _update_auth_session_last_seen(db, current_user)
+    _ensure_admin_user(current_user)
+
+    target_player = _get_player_by_username(db, request.target_username) if request.target_username else None
+    grants = list_access_grants(
+        db,
+        player_id=target_player.id if target_player else None,
+        include_revoked=request.include_revoked,
+    )
+    return AccessGrantListResponse(grants=[AccessGrantSummary(**serialize_access_grant(grant)) for grant in grants])
+
+
+@app.post("/admin/list_access_codes", response_model=PromoCodeListResponse)
+async def admin_list_access_codes(request: ListPromoCodesRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_current_user_matches(current_user, request.username)
+    _update_auth_session_last_seen(db, current_user)
+    _ensure_admin_user(current_user)
+
+    assigned_player = _get_player_by_username(db, request.assigned_username) if request.assigned_username else None
+    promo_codes = list_promo_codes(
+        db,
+        assigned_player_id=assigned_player.id if assigned_player else None,
+        include_revoked=request.include_revoked,
+    )
+    return PromoCodeListResponse(
+        promo_codes=[PromoCodeSummary(**serialize_promo_code(promo_code)) for promo_code in promo_codes]
+    )
+
+
+@app.post("/update_profile", response_model=ProfileResponse)
+async def update_profile(request: UpdateProfileRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_current_user_matches(current_user, request.username)
+    _update_auth_session_last_seen(db, current_user)
+
+    player = db.query(Player).filter(Player.username == request.username).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    guardian_email = _clean_optional_text(request.guardian_email)
+    if guardian_email and not _is_valid_email(guardian_email):
+        raise HTTPException(status_code=400, detail="Guardian email must be a valid email address.")
+
+    now = datetime.utcnow()
+    if request.display_name is not None:
+        player.display_name = _clean_optional_text(request.display_name) or player.username
+    if request.email is not None:
+        trimmed_email = request.email.strip()
+        if trimmed_email and not _is_valid_email(trimmed_email):
+            raise HTTPException(status_code=400, detail="Please enter a valid email address.")
+        player.email = trimmed_email or None
+    if request.avatar_id is not None:
+        player.avatar_id = normalize_avatar_id(request.avatar_id)
+    if request.curriculum_region is not None:
+        player.curriculum_region = _clean_optional_text(request.curriculum_region)
+    if request.preferred_model is not None:
+        player.preferred_model = _clean_optional_text(request.preferred_model)
+    if request.school_name is not None:
+        player.school_name = _clean_optional_text(request.school_name)
+    if request.district_name is not None:
+        player.district_name = _clean_optional_text(request.district_name)
+    if request.classroom_id is not None:
+        player.classroom_id = _clean_optional_text(request.classroom_id)
+    if request.roster_id is not None:
+        player.roster_id = _clean_optional_text(request.roster_id)
+    if request.guardian_name is not None:
+        player.guardian_name = _clean_optional_text(request.guardian_name)
+    if request.guardian_email is not None:
+        player.guardian_email = guardian_email
+
+    if request.clear_openai_api_key:
+        player.openai_api_key_encrypted = None
+        player.openai_api_key_updated_at = now
+    elif request.openai_api_key is not None:
+        trimmed_key = request.openai_api_key.strip()
+        if trimmed_key:
+            player.openai_api_key_encrypted = encrypt_profile_secret(trimmed_key)
+            player.openai_api_key_updated_at = now
+
+    player.updated_at = now
+    db.commit()
+    db.refresh(player)
+    return _build_profile_response(player)
+
+
+@app.post("/get_node_links", response_model=NodeLinksResponse)
+async def get_node_links(request: NodeLinksRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_current_user_matches(current_user, request.username)
+    _update_auth_session_last_seen(db, current_user)
+    payload = get_node_links_for_node(
+        db,
+        request.node_id,
+        viewer_player_id=current_user.id,
+        is_admin=_is_admin_user(current_user),
+    )
+    return NodeLinksResponse(**payload)
+
+
+@app.post("/submit_node_link", response_model=SubmitNodeLinkResponse)
+async def submit_node_link_endpoint(request: SubmitNodeLinkRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_current_user_matches(current_user, request.username)
+    _update_auth_session_last_seen(db, current_user)
+    link = submit_node_link(
+        db,
+        submitted_by_player_id=current_user.id,
+        node_id=request.node_id,
+        topic=request.topic,
+        title=request.title,
+        url=request.url,
+        description=request.description,
+        provider=request.provider,
+        link_type=request.link_type,
+        extra_metadata=request.extra_metadata,
+    )
+    db.commit()
+    db.refresh(link)
+    return SubmitNodeLinkResponse(status="pending_review", link=NodeLinkSummary(**serialize_node_link(link)))
+
+
+@app.post("/admin/list_node_links", response_model=PendingNodeLinksResponse)
+async def admin_list_node_links(request: PendingNodeLinksRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_current_user_matches(current_user, request.username)
+    _update_auth_session_last_seen(db, current_user)
+    _ensure_admin_user(current_user)
+    links = list_reviewable_node_links(db, review_status=request.review_status, node_id=request.node_id)
+    return PendingNodeLinksResponse(links=[NodeLinkSummary(**link) for link in links])
+
+
+@app.post("/admin/review_node_link", response_model=NodeLinkSummary)
+async def admin_review_node_link(request: ReviewNodeLinkRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_current_user_matches(current_user, request.username)
+    _update_auth_session_last_seen(db, current_user)
+    _ensure_admin_user(current_user)
+    link = review_node_link(
+        db,
+        link_id=request.link_id,
+        reviewed_by_player_id=current_user.id,
+        review_status=request.review_status,
+        review_notes=request.review_notes,
+        is_active=request.is_active,
+        sort_order=request.sort_order,
+    )
+    db.commit()
+    db.refresh(link)
+    return NodeLinkSummary(**serialize_node_link(link))
+
+
+@app.post("/stripe/webhook")
+async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
+    payload = await request.body()
+    signature = request.headers.get("stripe-signature")
+    handle_stripe_webhook(db, payload, signature)
+    return {"status": "ok"}
+
+
+@app.get("/billing/success", response_class=HTMLResponse)
+async def billing_success():
+    return HTMLResponse(content="<h2>Subscription Started</h2><p>Your billing setup was completed. You can return to Adaptive Tutor and refresh your profile.</p>")
+
+
+@app.get("/billing/cancel", response_class=HTMLResponse)
+async def billing_cancel():
+    return HTMLResponse(content="<h2>Checkout Cancelled</h2><p>No changes were made to your subscription. You can return to Adaptive Tutor.</p>")
+
+
+@app.get("/billing/manage-return", response_class=HTMLResponse)
+async def billing_manage_return():
+    return HTMLResponse(content="<h2>Billing Updated</h2><p>Your subscription settings were updated. You can return to Adaptive Tutor and refresh your profile.</p>")
 
 @app.post("/request-password-reset")
 async def request_password_reset(request: PasswordResetRequest, db: Session = Depends(get_db)):
@@ -257,20 +820,19 @@ async def request_password_reset(request: PasswordResetRequest, db: Session = De
         # "If user exists, email sent".
         return {"message": "If username exists with an email, a reset link has been sent."}
     
+    now = datetime.utcnow()
+    player.last_password_reset_requested_at = now
+    player.updated_at = now
+    db.commit()
+
     token = create_reset_token({"sub": player.username})
-    reset_link = f"http://127.0.0.1:8000/reset-password?token={token}" 
-    # NOTE: Fix URL for PROD later (use Host header or config)
-    # Check if PROD env var exists to build correct link?
-    # For now local is fine, user will likely configure a domain later.
-    
-    # Use SMTP
+    reset_link = f"{PUBLIC_BASE_URL}/reset-password?token={token}"
     send_email_reset_link(player.email, reset_link)
-    
     return {"message": "If username exists with an email, a reset link has been sent."}
 
 @app.get("/reset-password", response_class=HTMLResponse)
 async def reset_password_form(token: str):
-    # Serve Simple HTML Form
+    safe_token = html.escape(token, quote=True)
     return f"""
     <html>
         <head>
@@ -284,8 +846,8 @@ async def reset_password_form(token: str):
         <body>
             <h2>Reset Password</h2>
             <form action="/reset-password-confirm" method="post">
-                <input type="hidden" name="token" value="{token}">
-                <input type="password" name="new_password" placeholder="New Password" required>
+                <input type="hidden" name="token" value="{safe_token}">
+                <input type="password" name="new_password" placeholder="New Password" minlength="8" required>
                 <button type="submit">Reset Password</button>
             </form>
         </body>
@@ -294,7 +856,9 @@ async def reset_password_form(token: str):
 
 @app.post("/reset-password-confirm")
 async def reset_password_confirm(token: str = Form(...), new_password: str = Form(...), db: Session = Depends(get_db)):
-    from fastapi import Form
+    if len(new_password.strip()) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username = payload.get("sub")
@@ -306,49 +870,72 @@ async def reset_password_confirm(token: str = Form(...), new_password: str = For
     player = db.query(Player).filter(Player.username == username).first()
     if not player:
         raise HTTPException(status_code=404, detail="User not found")
-        
+
+    now = datetime.utcnow()
     player.password_hash = get_password_hash(new_password)
+    player.password_changed_at = now
+    player.updated_at = now
+    db.query(AuthSession).filter(
+        AuthSession.player_id == player.id,
+        AuthSession.revoked_at.is_(None),
+    ).update({"revoked_at": now}, synchronize_session=False)
     db.commit()
-    
     return HTMLResponse(content="<h2>Password Reset Successful</h2><p>You can now return to the app and login.</p>")
 
 @app.post("/login")
-async def login(request: LoginRequest, db: Session = Depends(get_db)):
+async def login(request: LoginRequest, http_request: Request, db: Session = Depends(get_db)):
     player = db.query(Player).filter(Player.username == request.username).first()
     if not player:
         raise HTTPException(status_code=400, detail="Incorrect username or password")
-    
+
+    if normalize_account_status(player.account_status) != "active":
+        raise HTTPException(status_code=403, detail="Account is not active")
     if not player.password_hash:
-        # Legacy user without password - Allow login or reject?
-        # For security, we should reject or require update.
-        # But for dev/legacy overlap, maybe allow if dev?
-        # User requested strict password support for Render.
-        # We will reject and say "Legacy Account - Please Reset" (or just fail for now)
-        # Actually, let's treat null password as 'allow any' ONLY for localhost? 
-        # No, better to be strict.
-        pass
-        
+        raise HTTPException(status_code=400, detail="Password reset required for this account")
     if not verify_password(request.password, player.password_hash):
         raise HTTPException(status_code=400, detail="Incorrect username or password")
-        
+
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    now = datetime.utcnow()
+    token_jti = str(uuid.uuid4())
     access_token = create_access_token(
-        data={"sub": player.username}, expires_delta=access_token_expires
+        data={"sub": player.username, "jti": token_jti}, expires_delta=access_token_expires
     )
+    player.last_login_at = now
+    player.updated_at = now
+    _record_auth_session(
+        db,
+        player,
+        token_jti=token_jti,
+        expires_at=now + access_token_expires,
+        http_request=http_request,
+    )
+    db.commit()
     return {"access_token": access_token, "token_type": "bearer"}
 
 @app.post("/select_book", response_model=BookSelectResponse)
 async def select_book(request: BookSelectRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
-    # 1. Get or Create Player
+    _ensure_current_user_matches(current_user, request.username)
+    _update_auth_session_last_seen(db, current_user)
+
     player = db.query(Player).filter(Player.username == request.username).first()
     if not player:
-        # Defaults: Grade 10, New Hampshire
-        player = Player(username=request.username, location="New Hampshire", grade_level=10)
+        now = datetime.utcnow()
+        player = Player(
+            username=request.username,
+            display_name=request.username,
+            location="New Hampshire",
+            curriculum_region="New Hampshire",
+            grade_level=10,
+            created_at=now,
+            updated_at=now,
+        )
         db.add(player)
         db.commit()
         db.refresh(player)
-    
-    # 2. Get or Create Topic Progress
+
+    assert_tutoring_access(db, player)
+
     progress = db.query(TopicProgress).filter(
         TopicProgress.player_id == player.id,
         TopicProgress.topic_name == request.topic
@@ -391,11 +978,21 @@ async def select_book(request: BookSelectRequest, current_user: Player = Depends
              effective_grade = f"Grade {topic_grade_match.group()}"
 
     if not progress:
-        progress = TopicProgress(player_id=player.id, topic_name=request.topic)
+        now = datetime.utcnow()
+        progress = TopicProgress(
+            player_id=player.id,
+            topic_name=request.topic,
+            mastery_score=0,
+            created_at=now,
+            updated_at=now,
+            last_interaction_at=now,
+        )
+        _apply_topic_progress_metadata(progress, request.topic)
         db.add(progress)
         db.commit()
         db.refresh(progress)
     else:
+        _apply_topic_progress_metadata(progress, request.topic)
         resume_summary = f"Continuing {request.topic}. Mastery: {progress.mastery_score}%"
 
     full_summary = (resume_summary or f"Starting {request.topic}.") + adaptive_suggestion
@@ -470,11 +1067,16 @@ async def select_book(request: BookSelectRequest, current_user: Player = Depends
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    _update_auth_session_last_seen(db, current_user)
     config = {"configurable": {"thread_id": request.session_id}}
     
     current_state = await graph.aget_state(config)
     if not current_state.values:
         raise HTTPException(status_code=404, detail="Session not found.")
+    if current_state.values.get("username") != current_user.username:
+        raise HTTPException(status_code=403, detail="Session access denied.")
+
+    assert_tutoring_access(db, current_user)
     
     inputs = {
         "messages": [HumanMessage(content=request.message)],
@@ -548,6 +1150,9 @@ async def chat(request: ChatRequest, current_user: Player = Depends(get_current_
     except Exception as e:
         print(f"Error injecting nav context: {e}")
 
+    increment_tutor_turn_usage(db, current_user)
+    db.commit()
+
     return ChatResponse(
         response=str(last_msg),
         state_snapshot=snapshot
@@ -559,12 +1164,15 @@ navigator = GraphNavigator()
 
 @app.post("/update_progress")
 async def update_progress(username: str, topic: str, xp_delta: int, mastery_delta: int, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_current_user_matches(current_user, username)
+    _update_auth_session_last_seen(db, current_user)
     player = db.query(Player).filter(Player.username == username).first()
     next_suggestions = []
     
     if player:
         player.xp += xp_delta
         player.level = 1 + player.xp // 100
+        player.updated_at = datetime.utcnow()
         
         progress = db.query(TopicProgress).filter(
             TopicProgress.player_id == player.id, 
@@ -575,10 +1183,22 @@ async def update_progress(username: str, topic: str, xp_delta: int, mastery_delt
 
         if not progress:
             # Create new if doesn't exist (edge case)
-            progress = TopicProgress(player_id=player.id, topic_name=topic, mastery_score=0)
+            now = datetime.utcnow()
+            progress = TopicProgress(
+                player_id=player.id,
+                topic_name=topic,
+                mastery_score=0,
+                created_at=now,
+                updated_at=now,
+                last_interaction_at=now,
+            )
+            _apply_topic_progress_metadata(progress, topic)
             db.add(progress)
 
         progress.mastery_score = min(100, progress.mastery_score + mastery_delta)
+        progress.updated_at = datetime.utcnow()
+        progress.last_interaction_at = progress.updated_at
+        _apply_topic_progress_metadata(progress, topic)
         
         # Mark visited/current node if topic matches a graph node? 
         # Currently "topic" in API is usually "Math 10" or "Solids".
@@ -599,6 +1219,8 @@ async def update_progress(username: str, topic: str, xp_delta: int, mastery_delt
             if topic not in current_completed:
                 current_completed.append(topic)
                 progress.completed_nodes = current_completed
+            if not progress.completed_at:
+                progress.completed_at = datetime.utcnow()
                 
         elif progress.status == "NOT_STARTED":
             progress.status = "IN_PROGRESS"
@@ -623,107 +1245,139 @@ async def update_progress(username: str, topic: str, xp_delta: int, mastery_delt
 
 @app.post("/init_session", response_model=InitSessionResponse)
 async def init_session(request: InitSessionRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_current_user_matches(current_user, request.username)
+    _update_auth_session_last_seen(db, current_user)
+
+    normalized_avatar_id = normalize_avatar_id(request.avatar_id)
+    now = datetime.utcnow()
+    guardian_email = _clean_optional_text(request.guardian_email)
+    if guardian_email and not _is_valid_email(guardian_email):
+        raise HTTPException(status_code=400, detail="Guardian email must be a valid email address.")
+
     player = db.query(Player).filter(Player.username == request.username).first()
     if not player:
-        # New player always saves
         player = Player(
             username=request.username, 
+            display_name=_clean_optional_text(request.display_name) or request.username,
             grade_level=request.grade_level,
             location=request.location,
+            curriculum_region=_clean_optional_text(request.curriculum_region) or request.location,
             learning_style=request.learning_style,
             sex=request.sex,
             birthday=request.birthday,
             interests=request.interests,
-            role=request.role
+            role=_normalize_user_role(request.role),
+            avatar_id=normalized_avatar_id,
+            preferred_model=_clean_optional_text(request.preferred_model),
+            school_name=_clean_optional_text(request.school_name),
+            district_name=_clean_optional_text(request.district_name),
+            classroom_id=_clean_optional_text(request.classroom_id),
+            roster_id=_clean_optional_text(request.roster_id),
+            guardian_name=_clean_optional_text(request.guardian_name),
+            guardian_email=guardian_email,
+            created_at=now,
+            updated_at=now,
         )
         db.add(player)
         db.commit()
     else:
-        # Update existing ONLY if requested
         if request.save_profile:
+            player.display_name = _clean_optional_text(request.display_name) or player.display_name or player.username
             player.grade_level = request.grade_level
             player.location = request.location
+            player.curriculum_region = _clean_optional_text(request.curriculum_region) or request.location
             player.learning_style = request.learning_style
             if request.sex: player.sex = request.sex
             if request.birthday: player.birthday = request.birthday
             if request.interests: player.interests = request.interests
-            if request.role: player.role = request.role
+            if request.role:
+                player.role = _normalize_user_role(request.role, allow_admin=_is_admin_user(current_user))
+            if request.avatar_id:
+                player.avatar_id = normalized_avatar_id
+            if request.preferred_model is not None:
+                player.preferred_model = _clean_optional_text(request.preferred_model)
+            if request.school_name is not None:
+                player.school_name = _clean_optional_text(request.school_name)
+            if request.district_name is not None:
+                player.district_name = _clean_optional_text(request.district_name)
+            if request.classroom_id is not None:
+                player.classroom_id = _clean_optional_text(request.classroom_id)
+            if request.roster_id is not None:
+                player.roster_id = _clean_optional_text(request.roster_id)
+            if request.guardian_name is not None:
+                player.guardian_name = _clean_optional_text(request.guardian_name)
+            if request.guardian_email is not None:
+                player.guardian_email = guardian_email
+            player.updated_at = now
             db.commit()
     
     db.refresh(player)
-    
-    # CRITICAL: Return the REQUESTED grade level for this session, 
-    # even if we didn't save it to the DB.
-    # If save_profile is False, player.grade_level might be old (e.g. 3), 
-    # but we want to return request.grade_level (e.g. 5) for this session.
     effective_grade = request.grade_level 
-    
-    return InitSessionResponse(status="ok", username=player.username, grade_level=effective_grade)
+    return InitSessionResponse(
+        status="ok",
+        username=player.username,
+        grade_level=effective_grade,
+        avatar_id=normalize_avatar_id(player.avatar_id),
+    )
 
 @app.post("/resume_shelf", response_model=ResumeShelfResponse)
-async def resume_shelf(request: ResumeShelfRequest, db: Session = Depends(get_db)):
-    print(f"[API] resume_shelf request for user: '{request.username}' category: '{request.shelf_category}'")
+async def resume_shelf(request: ResumeShelfRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    from .knowledge_graph import _subject_topic_prefixes
+
+    _ensure_current_user_matches(current_user, request.username)
+    _update_auth_session_last_seen(db, current_user)
+
     player = db.query(Player).filter(Player.username == request.username).first()
     if not player:
-         print(f"[API] Player '{request.username}' NOT FOUND in DB.")
-         raise HTTPException(status_code=404, detail="Player not found")
-         
-    # Logic: 
-    # 1. Check for Active Node (IN_PROGRESS)
-    # 2. If none, check for Next Node recommendations based on completed history.
-    
+        raise HTTPException(status_code=404, detail="Player not found")
+
     query = db.query(TopicProgress).filter(TopicProgress.player_id == player.id)
     if request.shelf_category:
-        query = query.filter(TopicProgress.topic_name.like(f"{request.shelf_category}%"))
-    
-    # Check for IN_PROGRESS
-    active_progress = query.filter(TopicProgress.status == "IN_PROGRESS").order_by(TopicProgress.mastery_score.desc()).first()
-    
-    if active_progress:
-         return ResumeShelfResponse(topic=active_progress.topic_name, reason=f"Resuming {active_progress.topic_name}...")
+        subject_key = _topic_metadata_from_name(request.shelf_category)[0]
+        prefixes = _subject_topic_prefixes(request.shelf_category)
+        subject_filters = []
+        if subject_key:
+            subject_filters.append(TopicProgress.subject_key == subject_key)
+        for prefix in prefixes:
+            subject_filters.append(TopicProgress.topic_name.like(f"{prefix}%"))
+        if subject_filters:
+            query = query.filter(or_(*subject_filters))
 
-    # If no active progress, use Graph Logic to find next
-    # We need ALL completed nodes for this player/category to traverse efficiently?
-    # Or just use the 'last modified' progress entry to find where they left off.
-    
-    last_completed = query.filter(TopicProgress.status == "COMPLETED").order_by(TopicProgress.id.desc()).first()
-    
+    active_progress = query.filter(TopicProgress.status == "IN_PROGRESS").order_by(
+        TopicProgress.last_interaction_at.desc(),
+        TopicProgress.updated_at.desc(),
+        TopicProgress.mastery_score.desc(),
+    ).first()
+    if active_progress:
+        return ResumeShelfResponse(topic=active_progress.topic_name, reason=f"Resuming {active_progress.topic_name}...")
+
+    last_completed = query.filter(TopicProgress.status == "COMPLETED").order_by(
+        TopicProgress.completed_at.desc(),
+        TopicProgress.updated_at.desc(),
+        TopicProgress.id.desc(),
+    ).first()
+
     target_topic = ""
     reason = ""
-
     if last_completed:
-        # Use Navigator
         completed_nodes = list(last_completed.completed_nodes) if last_completed.completed_nodes else []
         options = navigator.get_next_options(completed_nodes, player.grade_level)
-        
         if not options:
             reason = "Curriculum complete!"
             target_topic = request.shelf_category if request.shelf_category else "Review"
         elif len(options) == 1:
-            target_topic = request.shelf_category if request.shelf_category else options[0].split("->")[0] 
-            # Fallback split if no category known, though risky. 
-            # Better: Since we filtered by cat, use cat.
+            target_topic = request.shelf_category if request.shelf_category else options[0].split("->")[0]
             if request.shelf_category:
                 target_topic = request.shelf_category
             reason = f"Next logical topic: {options[0]}"
         else:
-            # Multiple options. WE MUST ASK USER.
-            # But resume_shelf returns a single 'topic'.
-            # We can return a special string or let Frontend handle it?
-            # User requirement: "ask the student to pick one".
-            # Hack: return first one but with specific reason?
-            # Better: Return "CHOOSE_TOPIC" and let standard Chat/UI handle choice?
-            # For now, pick first and note choice.
             if request.shelf_category:
                 target_topic = request.shelf_category
             else:
-                 target_topic = options[0] # Fallback
-            
+                target_topic = options[0]
             reason = f"Suggested next topic: {options[0]}"
     else:
-        # Start fresh
-        cat = request.shelf_category if request.shelf_category else "Science" # Default
-        # Get roots
+        cat = request.shelf_category if request.shelf_category else "Science"
         options = navigator.get_next_options([], player.grade_level, subject_filter=cat)
         if options:
             target_topic = cat
@@ -734,7 +1388,9 @@ async def resume_shelf(request: ResumeShelfRequest, db: Session = Depends(get_db
 
     return ResumeShelfResponse(topic=target_topic, reason=reason)
 @app.post("/get_topic_graph", response_model=GraphDataResponse)
-async def get_topic_graph(request: GraphDataRequest, db: Session = Depends(get_db)):
+async def get_topic_graph(request: GraphDataRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_current_user_matches(current_user, request.username)
+    _update_auth_session_last_seen(db, current_user)
     from .knowledge_graph import get_graph
     
     kg = get_graph(request.topic)
@@ -778,6 +1434,12 @@ async def get_topic_graph(request: GraphDataRequest, db: Session = Depends(get_d
     window_limit = request.window_size if request.window_size > 0 else 20
     target_nodes = kg.get_window(focus, window_limit)
     
+    link_counts = get_node_link_count_map(
+        db,
+        [node_obj.id for node_obj in target_nodes],
+        include_pending=_is_admin_user(current_user),
+    )
+
     for node_obj in target_nodes:
         node_id = node_obj.id
         node_data = kg.graph.nodes[node_id]
@@ -804,7 +1466,10 @@ async def get_topic_graph(request: GraphDataRequest, db: Session = Depends(get_d
             grade_level=node_data.get("grade_level", 0),
             type=node_data.get("type", "concept"),
             status=status,
-            parent=parent_id
+            parent=parent_id,
+            authoritative_link_count=link_counts.get(node_id, {}).get("authoritative_link_count", 0),
+            approved_user_link_count=link_counts.get(node_id, {}).get("approved_user_link_count", 0),
+            pending_user_link_count=link_counts.get(node_id, {}).get("pending_user_link_count", 0),
         ))
         # Late pass for "Available"? 
     # Calling get_next_learnable_nodes is expensive if we do it for all?
@@ -819,7 +1484,9 @@ async def get_topic_graph(request: GraphDataRequest, db: Session = Depends(get_d
     return GraphDataResponse(nodes=result_nodes)
 
 @app.post("/set_current_node")
-async def set_current_node(request: SetCurrentNodeRequest, db: Session = Depends(get_db)):
+async def set_current_node(request: SetCurrentNodeRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_current_user_matches(current_user, request.username)
+    _update_auth_session_last_seen(db, current_user)
     player = db.query(Player).filter(Player.username == request.username).first()
     if not player:
         raise HTTPException(status_code=404, detail="Player not found")
@@ -831,14 +1498,22 @@ async def set_current_node(request: SetCurrentNodeRequest, db: Session = Depends
     
     
     if not prog:
-        # Should create?
-        prog = TopicProgress(player_id=player.id, topic_name=request.topic, mastery_score=0)
+        now = datetime.utcnow()
+        prog = TopicProgress(
+            player_id=player.id,
+            topic_name=request.topic,
+            mastery_score=0,
+            created_at=now,
+            updated_at=now,
+            last_interaction_at=now,
+        )
+        _apply_topic_progress_metadata(prog, request.topic)
         db.add(prog)
-        
-    # Verify node exists in graph?
-    # Assume frontend sends valid ID.
-    
+
     prog.current_node = request.node_id
+    prog.last_interaction_at = datetime.utcnow()
+    prog.updated_at = datetime.utcnow()
+    _apply_topic_progress_metadata(prog, request.topic)
     if prog.status == "NOT_STARTED":
         prog.status = "IN_PROGRESS"
         

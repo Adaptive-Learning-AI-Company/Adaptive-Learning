@@ -1,5 +1,6 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
+from datetime import datetime
 
 class InitRequest(BaseModel):
     user_id: str # This will be the username now
@@ -11,13 +12,24 @@ class RegisterRequest(BaseModel):
     username: str
     password: str
     email: str # [NEW]
+    display_name: Optional[str] = None
     grade_level: int
     location: str
+    curriculum_region: Optional[str] = None
     learning_style: str
     sex: str
     role: str
     birthday: str
     interests: str
+    avatar_id: Optional[str] = "schoolgirl"
+    openai_api_key: Optional[str] = None
+    preferred_model: Optional[str] = None
+    school_name: Optional[str] = None
+    district_name: Optional[str] = None
+    classroom_id: Optional[str] = None
+    roster_id: Optional[str] = None
+    guardian_name: Optional[str] = None
+    guardian_email: Optional[str] = None
 
 class LoginRequest(BaseModel):
     username: str
@@ -58,17 +70,253 @@ class InitSessionRequest(BaseModel):
     username: str
     grade_level: int
     location: str
+    curriculum_region: Optional[str] = None
     learning_style: str
     sex: Optional[str] = "Not Specified"
     birthday: Optional[str] = None
     interests: Optional[str] = None
     role: Optional[str] = None
+    display_name: Optional[str] = None
+    avatar_id: Optional[str] = None
+    preferred_model: Optional[str] = None
+    school_name: Optional[str] = None
+    district_name: Optional[str] = None
+    classroom_id: Optional[str] = None
+    roster_id: Optional[str] = None
+    guardian_name: Optional[str] = None
+    guardian_email: Optional[str] = None
     save_profile: bool = False
 
 class InitSessionResponse(BaseModel):
     status: str
     username: str
     grade_level: int
+    avatar_id: str
+
+class ProfileRequest(BaseModel):
+    username: str
+
+class UpdateProfileRequest(BaseModel):
+    username: str
+    display_name: Optional[str] = None
+    email: Optional[str] = None
+    avatar_id: Optional[str] = None
+    openai_api_key: Optional[str] = None
+    clear_openai_api_key: bool = False
+    curriculum_region: Optional[str] = None
+    preferred_model: Optional[str] = None
+    school_name: Optional[str] = None
+    district_name: Optional[str] = None
+    classroom_id: Optional[str] = None
+    roster_id: Optional[str] = None
+    guardian_name: Optional[str] = None
+    guardian_email: Optional[str] = None
+
+class ProfileResponse(BaseModel):
+    username: str
+    display_name: Optional[str] = None
+    email: Optional[str] = None
+    avatar_id: str
+    has_personal_openai_key: bool = False
+    openai_key_hint: Optional[str] = None
+    account_status: str = "active"
+    curriculum_region: Optional[str] = None
+    preferred_model: Optional[str] = None
+    school_name: Optional[str] = None
+    district_name: Optional[str] = None
+    classroom_id: Optional[str] = None
+    roster_id: Optional[str] = None
+    guardian_name: Optional[str] = None
+    guardian_email: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    last_login_at: Optional[datetime] = None
+    email_verified_at: Optional[datetime] = None
+    password_changed_at: Optional[datetime] = None
+    last_password_reset_requested_at: Optional[datetime] = None
+    openai_api_key_updated_at: Optional[datetime] = None
+
+
+class BillingStatusRequest(BaseModel):
+    username: str
+
+
+class BillingCheckoutRequest(BaseModel):
+    username: str
+    plan_code: str
+
+
+class BillingPortalRequest(BaseModel):
+    username: str
+
+
+class BillingPlanSummary(BaseModel):
+    plan_code: str
+    display_name: str
+    description: Optional[str] = None
+    monthly_price_cents: int
+    currency: str = "usd"
+    includes_hosted_usage: bool = False
+    requires_personal_key: bool = False
+    monthly_tutor_turn_cap: Optional[int] = None
+    monthly_llm_call_cap: Optional[int] = None
+    monthly_input_token_cap: Optional[int] = None
+    monthly_output_token_cap: Optional[int] = None
+    monthly_cost_cap_cents: Optional[int] = None
+    hosted_main_model: Optional[str] = None
+    hosted_fast_model: Optional[str] = None
+    is_recommended: bool = False
+
+
+class BillingUsageSummary(BaseModel):
+    cycle_start: Optional[datetime] = None
+    cycle_end: Optional[datetime] = None
+    tutor_turns_used: int = 0
+    llm_calls_used: int = 0
+    input_tokens_used: int = 0
+    output_tokens_used: int = 0
+    estimated_cost_cents: int = 0
+
+
+class BillingStatusResponse(BaseModel):
+    billing_enabled: bool = False
+    billing_enforced: bool = False
+    checkout_available: bool = False
+    portal_available: bool = False
+    uses_personal_key: bool = False
+    recommended_plan_code: Optional[str] = None
+    effective_plan_code: Optional[str] = None
+    access_source_type: Optional[str] = None
+    access_source_label: Optional[str] = None
+    access_grant_expires_at: Optional[datetime] = None
+    subscription_plan_code: Optional[str] = None
+    subscription_status: Optional[str] = None
+    subscription_current_period_end: Optional[datetime] = None
+    cancel_at_period_end: bool = False
+    payment_method_brand: Optional[str] = None
+    payment_method_last4: Optional[str] = None
+    usage: BillingUsageSummary
+    plans: List[BillingPlanSummary]
+    access_allowed: bool = True
+    access_reason: Optional[str] = None
+    active_hosted_model: Optional[str] = None
+
+
+class BillingCheckoutResponse(BaseModel):
+    url: str
+
+
+class BillingPortalResponse(BaseModel):
+    url: str
+
+
+class RedeemAccessCodeRequest(BaseModel):
+    username: str
+    code: str
+
+
+class RedeemAccessCodeResponse(BaseModel):
+    status: str
+    plan_code: str
+    access_source_type: str
+    expires_at: Optional[datetime] = None
+    message: Optional[str] = None
+
+
+class CreatePromoCodeRequest(BaseModel):
+    username: str
+    plan_code: str
+    assigned_username: Optional[str] = None
+    starts_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    duration_days: Optional[int] = None
+    max_redemptions: int = 1
+    code: Optional[str] = None
+    notes: Optional[str] = None
+    extra_metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class GrantAccessRequest(BaseModel):
+    username: str
+    target_username: str
+    plan_code: str
+    starts_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    duration_days: Optional[int] = None
+    notes: Optional[str] = None
+    extra_metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RevokeAccessGrantRequest(BaseModel):
+    username: str
+    access_grant_id: int
+    reason: Optional[str] = None
+
+
+class RevokePromoCodeRequest(BaseModel):
+    username: str
+    promo_code_id: int
+    reason: Optional[str] = None
+    revoke_grants: bool = True
+
+
+class ListAccessGrantsRequest(BaseModel):
+    username: str
+    target_username: Optional[str] = None
+    include_revoked: bool = False
+
+
+class ListPromoCodesRequest(BaseModel):
+    username: str
+    assigned_username: Optional[str] = None
+    include_revoked: bool = False
+
+
+class AccessGrantSummary(BaseModel):
+    id: int
+    username: Optional[str] = None
+    plan_code: str
+    source_type: str
+    source_id: Optional[int] = None
+    starts_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None
+    revocation_reason: Optional[str] = None
+    notes: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    created_by_username: Optional[str] = None
+
+
+class PromoCodeSummary(BaseModel):
+    id: int
+    code_prefix: Optional[str] = None
+    assigned_username: Optional[str] = None
+    plan_code: str
+    starts_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    max_redemptions: int = 1
+    redemption_count: int = 0
+    revoked_at: Optional[datetime] = None
+    revocation_reason: Optional[str] = None
+    notes: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    created_by_username: Optional[str] = None
+
+
+class CreatePromoCodeResponse(BaseModel):
+    promo_code: PromoCodeSummary
+    code: str
+
+
+class AccessGrantListResponse(BaseModel):
+    grants: List[AccessGrantSummary] = Field(default_factory=list)
+
+
+class PromoCodeListResponse(BaseModel):
+    promo_codes: List[PromoCodeSummary] = Field(default_factory=list)
+
 
 class ResumeShelfRequest(BaseModel):
     username: str
@@ -94,6 +342,9 @@ class GraphNode(BaseModel):
     type: str # topic, subtopic, concept
     status: str # locked, available, completed, current
     parent: Optional[str] = None
+    authoritative_link_count: int = 0
+    approved_user_link_count: int = 0
+    pending_user_link_count: int = 0
 
 class GraphDataResponse(BaseModel):
     nodes: List[GraphNode]
@@ -102,3 +353,74 @@ class SetCurrentNodeRequest(BaseModel):
     username: str
     topic: str
     node_id: str
+
+
+class NodeLinksRequest(BaseModel):
+    username: str
+    node_id: str
+    topic: Optional[str] = None
+
+
+class SubmitNodeLinkRequest(BaseModel):
+    username: str
+    node_id: str
+    topic: Optional[str] = None
+    title: str
+    url: str
+    description: Optional[str] = None
+    provider: Optional[str] = None
+    link_type: Optional[str] = "general"
+    extra_metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ReviewNodeLinkRequest(BaseModel):
+    username: str
+    link_id: int
+    review_status: str
+    review_notes: Optional[str] = None
+    is_active: Optional[bool] = None
+    sort_order: Optional[int] = None
+
+
+class PendingNodeLinksRequest(BaseModel):
+    username: str
+    review_status: Optional[str] = "pending"
+    node_id: Optional[str] = None
+
+
+class NodeLinkSummary(BaseModel):
+    id: int
+    node_id: str
+    subject_key: Optional[str] = None
+    title: str
+    url: str
+    description: Optional[str] = None
+    provider: Optional[str] = None
+    link_type: str = "general"
+    source_kind: str
+    review_status: str
+    review_notes: Optional[str] = None
+    is_active: bool = True
+    sort_order: int = 0
+    extra_metadata: Dict[str, Any] = Field(default_factory=dict)
+    submitted_by_username: Optional[str] = None
+    reviewed_by_username: Optional[str] = None
+    reviewed_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class NodeLinksResponse(BaseModel):
+    authoritative_links: List[NodeLinkSummary] = Field(default_factory=list)
+    approved_user_links: List[NodeLinkSummary] = Field(default_factory=list)
+    pending_user_links: List[NodeLinkSummary] = Field(default_factory=list)
+    is_admin: bool = False
+
+
+class SubmitNodeLinkResponse(BaseModel):
+    status: str
+    link: NodeLinkSummary
+
+
+class PendingNodeLinksResponse(BaseModel):
+    links: List[NodeLinkSummary] = Field(default_factory=list)

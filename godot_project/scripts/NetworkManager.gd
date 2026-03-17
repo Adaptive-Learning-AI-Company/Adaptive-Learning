@@ -6,7 +6,7 @@ signal error_occurred(msg: String)
 signal progress_updated(xp: int, level: int, mastery: int)
 
 # PROD URL (Render)
-var prod_url = "https://placeholder-backend.onrender.com" # Updated via Secrets.gd
+var prod_url = "https://placeholder-backend.onrender.com" # Updated via generated config or Secrets.gd fallback
 # LOCAL URL
 var local_url = "http://127.0.0.1:8000"
 
@@ -14,6 +14,24 @@ var base_url = ""
 var session_id = ""
 var current_username = "Player1"
 var auth_token = ""
+
+func _load_prod_url_from_secrets():
+	var candidate_paths = [
+		"res://scripts/GeneratedSecrets.gd",
+		"res://scripts/Secrets.gd"
+	]
+
+	for candidate_path in candidate_paths:
+		var secrets_script = load(candidate_path)
+		if not secrets_script:
+			continue
+
+		var constants = secrets_script.get_script_constant_map()
+		if constants.has("PROD_URL"):
+			var resolved = str(constants["PROD_URL"]).strip_edges()
+			if resolved != "":
+				prod_url = resolved
+				return
 
 func get_topic_graph(topic: String, success_callback: Callable, error_callback: Callable, focus_node_id = null):
 	var http = HTTPRequest.new()
@@ -66,23 +84,12 @@ func set_current_node(topic: String, node_id: String, success_callback: Callable
 
 func _ready():
 	print("NetworkManager ready")
+	_load_prod_url_from_secrets()
 	# Detect Environment
 	if OS.has_feature("editor") or OS.has_feature("debug"):
 		base_url = local_url
 		print("NetworkManager: Using LOCAL Backend: " + base_url)
-		# check for Secrets class
-		var secrets_script = load("res://scripts/Secrets.gd")
-		if secrets_script:
-			# Try to get constant directly from script map or instance
-			var inst = secrets_script.new()
-			if "PROD_URL" in inst:
-				prod_url = inst.PROD_URL
-				# But typically consts are not props.
-				# Let's try getting it from the script constants map
-				var constants = secrets_script.get_script_constant_map()
-				if constants.has("PROD_URL"):
-					prod_url = constants["PROD_URL"]
-		
+
 		# Secrets loaded (prod_url updated), but keep base_url = local_url for now.
 		# base_url = prod_url # ERROR: Do not overwrite local_url here!
 	else:
@@ -138,6 +145,12 @@ func _on_select_completed(_result, response_code, headers, body):
 			session_id = json["session_id"]
 			emit_signal("session_ready", json)
 			print("Session initialized: " + session_id)
+	else:
+		var error_message = "Failed to open lesson."
+		var parsed = JSON.parse_string(response_body)
+		if typeof(parsed) == TYPE_DICTIONARY and parsed.has("detail"):
+			error_message = str(parsed["detail"])
+		emit_signal("error_occurred", error_message)
 
 func send_message(msg: String, view_as_student: bool = false, grade_override: int = -1):
 	if session_id == "":
@@ -188,8 +201,11 @@ func post_request(endpoint: String, data: Dictionary, success_callback: Callable
 			if json:
 				success_callback.call(response_code, json)
 		else:
-			# Pass error code
-			error_callback.call(response_code, "Request failed: " + str(response_code))
+			var error_message = "Request failed: " + str(response_code)
+			var parsed = JSON.parse_string(response_body)
+			if typeof(parsed) == TYPE_DICTIONARY and parsed.has("detail"):
+				error_message = str(parsed["detail"])
+			error_callback.call(response_code, error_message)
 		http.queue_free()
 	)
 	

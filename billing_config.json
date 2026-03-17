@@ -1,0 +1,32 @@
+{
+  "currency": "usd",
+  "plans": {
+    "byok_monthly": {
+      "display_name": "Bring Your Own Key",
+      "description": "Use your own OpenAI API key inside Adaptive Tutor.",
+      "monthly_price_cents": 99,
+      "includes_hosted_usage": false,
+      "requires_personal_key": true
+    },
+    "hosted_monthly": {
+      "display_name": "Hosted AI Tutor",
+      "description": "Adaptive Tutor includes OpenAI usage with GPT-5 mini and built-in monthly caps.",
+      "monthly_price_cents": 499,
+      "includes_hosted_usage": true,
+      "requires_personal_key": false,
+      "monthly_tutor_turn_cap": 1200,
+      "monthly_llm_call_cap": 2500,
+      "monthly_input_token_cap": 5000000,
+      "monthly_output_token_cap": 750000,
+      "monthly_cost_cap_cents": 250,
+      "hosted_main_model": "gpt-5-mini",
+      "hosted_fast_model": "gpt-5-mini"
+    }
+  },
+  "model_pricing": {
+    "gpt-5-mini": {
+      "input_price_per_1m": 0.25,
+      "output_price_per_1m": 2.0
+    }
+  }
+}

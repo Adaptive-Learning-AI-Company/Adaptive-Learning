@@ -1,5 +1,7 @@
 
 import operator
+import os
+import time
 from typing import TypedDict, List, Annotated, Union
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage
@@ -7,11 +9,17 @@ from langgraph.graph import StateGraph, END
 from .prompts import TEACHER_PROMPT, TEACHER_OF_TEACHERS_PROMPT, PROBLEM_GENERATOR_PROMPT, VERIFIER_PROMPT, SUPERVISOR_PROMPT, ADAPTER_PROMPT
 from .database import log_interaction, get_db, Player, TopicProgress, SessionLocal
 from .knowledge_graph import get_graph, get_all_subjects_stats
+from .config import load_local_env
+from .billing import get_hosted_models
+from .profile_security import decrypt_profile_secret
 import json 
+
+load_local_env()
 
 # State Definition
 class AgentState(TypedDict):
     messages: Annotated[List[BaseMessage], operator.add]
+    session_id: str
     topic: str
     grade_level: str
     location: str
@@ -24,8 +32,100 @@ class AgentState(TypedDict):
     role: str # "Student" or "Teacher"
     view_as_student: bool
 
-# LLM
-llm = ChatOpenAI(model="gpt-4o")
+DEFAULT_MAIN_MODEL, DEFAULT_FAST_MODEL = get_hosted_models()
+
+
+def _build_llm(state: AgentState, model: str, allow_preferred_model: bool = False, **kwargs):
+    username = state.get("username") if state else None
+    api_key, resolved_model, billing_source = _resolve_llm_settings_for_user(
+        username,
+        requested_model=model,
+        allow_preferred_model=allow_preferred_model,
+    )
+    if api_key:
+        return ChatOpenAI(model=resolved_model, api_key=api_key, **kwargs), resolved_model, billing_source
+    return ChatOpenAI(model=resolved_model, **kwargs), resolved_model, billing_source
+
+
+def _resolve_llm_settings_for_user(
+    username: str | None,
+    requested_model: str,
+    allow_preferred_model: bool = False,
+) -> tuple[str | None, str, str]:
+    resolved_model = requested_model
+    if not username:
+        return os.getenv("OPENAI_API_KEY"), resolved_model, "platform"
+
+    db = SessionLocal()
+    try:
+        player = db.query(Player).filter(Player.username == username).first()
+        if player:
+            if allow_preferred_model and player.preferred_model:
+                resolved_model = player.preferred_model
+
+            if player.openai_api_key_encrypted:
+                decrypted = decrypt_profile_secret(player.openai_api_key_encrypted)
+                if decrypted:
+                    return decrypted, resolved_model, "personal"
+    finally:
+        db.close()
+
+    return os.getenv("OPENAI_API_KEY"), resolved_model, "platform"
+
+
+def _subject_key_for_topic(topic_name: str | None) -> str:
+    if not topic_name:
+        return "General"
+
+    token = topic_name.strip().split(" ")[0].replace("-", "_")
+    normalized = token.lower()
+    subject_map = {
+        "math": "Math",
+        "science": "Science",
+        "history": "Social_Studies",
+        "social_studies": "Social_Studies",
+        "socialstudies": "Social_Studies",
+        "english": "ELA",
+        "ela": "ELA",
+    }
+    return subject_map.get(normalized, token)
+
+
+def _current_node_id_for_state(state: AgentState) -> str | None:
+    db = SessionLocal()
+    try:
+        player = db.query(Player).filter(Player.username == state.get("username")).first()
+        if not player:
+            return None
+
+        progress = db.query(TopicProgress).filter(
+            TopicProgress.player_id == player.id,
+            TopicProgress.topic_name == state.get("topic"),
+        ).first()
+        if not progress:
+            return None
+
+        return progress.current_node
+    finally:
+        db.close()
+
+
+def _extract_usage_metrics(message) -> tuple[int | None, int | None]:
+    if message is None:
+        return None, None
+
+    usage = getattr(message, "usage_metadata", None) or {}
+    input_tokens = usage.get("input_tokens")
+    output_tokens = usage.get("output_tokens")
+
+    response_metadata = getattr(message, "response_metadata", None) or {}
+    token_usage = response_metadata.get("token_usage", {})
+    if input_tokens is None:
+        input_tokens = token_usage.get("prompt_tokens")
+    if output_tokens is None:
+        output_tokens = token_usage.get("completion_tokens")
+
+    return input_tokens, output_tokens
 
 # Nodes
 def supervisor_node(state: AgentState):
@@ -38,7 +138,7 @@ def supervisor_node(state: AgentState):
         last_action=state.get('current_action', 'IDLE')
     )
     
-    decision_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    decision_llm, _decision_model, _decision_billing_source = _build_llm(state, DEFAULT_FAST_MODEL, temperature=0)
     response = decision_llm.invoke(prompt)
     decision = response.content.strip().upper()
     
@@ -205,15 +305,31 @@ def teacher_node(state: AgentState):
             print(f"[AGENTS] Replaced Role Trigger with Directive: {directive}")
         
     messages = [SystemMessage(content=prompt)] + context_msgs
-    response = llm.invoke(messages)
+    teacher_llm, teacher_model_name, teacher_billing_source = _build_llm(
+        state,
+        DEFAULT_MAIN_MODEL,
+        allow_preferred_model=True,
+    )
+    start_time = time.perf_counter()
+    response = teacher_llm.invoke(messages)
+    latency_ms = int((time.perf_counter() - start_time) * 1000)
+    input_tokens, output_tokens = _extract_usage_metrics(response)
     print(f"RESPONSE:\n{response.content}\n")
     
     log_interaction(
         username=state.get("username", "Unknown"),
-        subject=state.get("topic", "General"),
+        subject=_subject_key_for_topic(state.get("topic")),
         user_query=state['messages'][-1].content if state['messages'] else "",
         agent_response=response.content,
-        source_node="teacher"
+        source_node="teacher",
+        session_id=state.get("session_id"),
+        topic_name=state.get("topic"),
+        node_id=current_node.id if current_node else _current_node_id_for_state(state),
+        model_name=teacher_model_name,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        latency_ms=latency_ms,
+        billing_source=teacher_billing_source,
     )
     
     done_unit, total_unit = 0, 0
@@ -313,15 +429,31 @@ def problem_node(state: AgentState):
     context_messages = state['messages'][-5:] 
     full_input = [SystemMessage(content=prompt)] + context_messages
     
-    response = llm.invoke(full_input)
+    problem_llm, problem_model_name, problem_billing_source = _build_llm(
+        state,
+        DEFAULT_MAIN_MODEL,
+        allow_preferred_model=True,
+    )
+    start_time = time.perf_counter()
+    response = problem_llm.invoke(full_input)
+    latency_ms = int((time.perf_counter() - start_time) * 1000)
+    input_tokens, output_tokens = _extract_usage_metrics(response)
     print(f"RESPONSE:\n{response.content}\n")
     
     log_interaction(
         username=state.get("username", "Unknown"),
-        subject=topic_broad,
+        subject=_subject_key_for_topic(topic_broad),
         user_query="[System Triggered Problem Generation]",
         agent_response=response.content,
-        source_node="problem_generator"
+        source_node="problem_generator",
+        session_id=state.get("session_id"),
+        topic_name=topic_broad,
+        node_id=_current_node_id_for_state(state),
+        model_name=problem_model_name,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        latency_ms=latency_ms,
+        billing_source=problem_billing_source,
     )
     
     return {"messages": [response], "current_action": "PROBLEM_GIVEN", "last_problem": response.content, "next_dest": "END"}
@@ -340,11 +472,33 @@ def verifier_node(state: AgentState):
     prompt = VERIFIER_PROMPT.format(last_problem=problem_context, last_answer=last_answer)
     print(f"\n[AGENTS] VERIFIER NODE\nPROMPT:\n{prompt}\n")
     
-    response = llm.invoke([SystemMessage(content=prompt)])
+    verifier_llm, verifier_model_name, verifier_billing_source = _build_llm(
+        state,
+        DEFAULT_MAIN_MODEL,
+        allow_preferred_model=True,
+    )
+    start_time = time.perf_counter()
+    response = verifier_llm.invoke([SystemMessage(content=prompt)])
+    latency_ms = int((time.perf_counter() - start_time) * 1000)
+    input_tokens, output_tokens = _extract_usage_metrics(response)
     content = response.content
     print(f"RESPONSE:\n{content}\n")
     
-    log_interaction(state.get("username"), state.get("topic"), last_answer, content, "verifier")
+    log_interaction(
+        state.get("username"),
+        _subject_key_for_topic(state.get("topic")),
+        last_answer,
+        content,
+        "verifier",
+        session_id=state.get("session_id"),
+        topic_name=state.get("topic"),
+        node_id=_current_node_id_for_state(state),
+        model_name=verifier_model_name,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        latency_ms=latency_ms,
+        billing_source=verifier_billing_source,
+    )
     
     # Pass to Adapter
     return {"messages": [response], "next_dest": "ADAPTER"}
@@ -367,7 +521,12 @@ def adapter_node(state: AgentState):
     print(f"\n[AGENTS] ADAPTER NODE\nPROMPT:\n{prompt}\n")
     
     # Force JSON output
-    adapter_llm = ChatOpenAI(model="gpt-4o", model_kwargs={"response_format": {"type": "json_object"}})
+    adapter_llm, _adapter_model_name, _adapter_billing_source = _build_llm(
+        state,
+        DEFAULT_MAIN_MODEL,
+        allow_preferred_model=True,
+        model_kwargs={"response_format": {"type": "json_object"}},
+    )
     response = adapter_llm.invoke([SystemMessage(content=prompt)])
     content = response.content
     print(f"RESPONSE:\n{content}\n")
@@ -478,15 +637,31 @@ def adapter_node(state: AgentState):
 
 def chat_node(state: AgentState):
     print(f"\n[AGENTS] GENERAL CHAT NODE\nMessages: {state['messages']}\n")
-    response = llm.invoke(state['messages'])
+    chat_llm, chat_model_name, chat_billing_source = _build_llm(
+        state,
+        DEFAULT_MAIN_MODEL,
+        allow_preferred_model=True,
+    )
+    start_time = time.perf_counter()
+    response = chat_llm.invoke(state['messages'])
+    latency_ms = int((time.perf_counter() - start_time) * 1000)
+    input_tokens, output_tokens = _extract_usage_metrics(response)
     print(f"RESPONSE:\n{response.content}\n")
     
     log_interaction(
         username=state.get("username", "Unknown"),
-        subject="General",
+        subject=_subject_key_for_topic(state.get("topic")),
         user_query=state['messages'][-1].content if state['messages'] else "",
         agent_response=response.content,
-        source_node="general_chat"
+        source_node="general_chat",
+        session_id=state.get("session_id"),
+        topic_name=state.get("topic"),
+        node_id=_current_node_id_for_state(state),
+        model_name=chat_model_name,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        latency_ms=latency_ms,
+        billing_source=chat_billing_source,
     )
     
     return {"messages": [response], "next_dest": "END"}

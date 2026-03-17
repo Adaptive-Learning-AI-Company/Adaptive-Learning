@@ -1,0 +1,13 @@
+AddType application/wasm .wasm
+AddType application/manifest+json .webmanifest
+AddType application/javascript .js
+
+<IfModule mod_headers.c>
+  <FilesMatch "\.(wasm|js|pck|png|ico|webmanifest)$">
+    Header set Cache-Control "public, max-age=604800"
+  </FilesMatch>
+
+  <FilesMatch "\.(html)$">
+    Header set Cache-Control "no-cache, must-revalidate"
+  </FilesMatch>
+</IfModule>

@@ -1,0 +1,32 @@
+[project]
+name = "adaptive-learning"
+version = "0.1.0"
+description = "Adaptive Tutor backend and tooling"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+  "bcrypt==4.0.1",
+  "fastapi",
+  "langchain",
+  "langchain-openai",
+  "langgraph",
+  "networkx",
+  "passlib[bcrypt]",
+  "psycopg2-binary",
+  "pydantic",
+  "python-jose[cryptography]",
+  "python-multipart",
+  "sqlalchemy",
+  "stripe",
+  "uvicorn",
+]
+
+[dependency-groups]
+dev = [
+  "httpx",
+  "pytest",
+  "websockets",
+]
+
+[tool.uv]
+package = false

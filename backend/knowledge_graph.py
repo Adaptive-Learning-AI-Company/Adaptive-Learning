@@ -28,6 +28,30 @@ def _normalize_subject_name(subject: str) -> str:
         normalized = "math"
     return normalized
 
+
+def _canonical_subject_key(subject: str) -> str:
+    normalized = _normalize_subject_name(subject)
+    subject_map = {
+        "math": "Math",
+        "science": "Science",
+        "history": "Social_Studies",
+        "social_studies": "Social_Studies",
+        "english": "ELA",
+        "ela": "ELA",
+    }
+    return subject_map.get(normalized, normalized.replace("_", " ").title().replace(" ", "_"))
+
+
+def _subject_topic_prefixes(subject: str) -> List[str]:
+    canonical = _canonical_subject_key(subject)
+    prefix_map = {
+        "Math": ["Math"],
+        "Science": ["Science"],
+        "Social_Studies": ["Social_Studies", "Social Studies", "History"],
+        "ELA": ["ELA", "English"],
+    }
+    return prefix_map.get(canonical, [canonical])
+
 class KnowledgeGraph:
     def __init__(self, subject: str, state: str = "NH"):
         self.subject = subject
@@ -322,30 +346,59 @@ def get_all_subjects_stats(player_id: int, db_session) -> Tuple[int, int]:
     total_done = 0
     total_concepts = 0
     
-    from .database import TopicProgress # Import locally to avoid circular dep if needed
+    from .database import TopicProgress
+    from sqlalchemy import or_
     
     for subj in subjects:
         # Load Graph
         kg = get_graph(subj)
         if not kg or len(kg.graph.nodes) == 0:
             continue
-            
-        # Get Player Progress for this subject
-        # Note: TopicProgress usually stores "Math", "Science" etc.
-        db_topic_name = subj
 
-        
-        prog = db_session.query(TopicProgress).filter(
+        subject_key = _canonical_subject_key(subj)
+        conditions = [TopicProgress.subject_key == subject_key]
+        for prefix in _subject_topic_prefixes(subj):
+            conditions.append(TopicProgress.topic_name.ilike(f"{prefix}%"))
+
+        progress_rows = db_session.query(TopicProgress).filter(
             TopicProgress.player_id == player_id,
-            TopicProgress.topic_name == db_topic_name
-        ).first()
-        
-        completed = []
-        if prog and prog.completed_nodes:
-            completed = prog.completed_nodes
-            
+            or_(*conditions),
+        ).all()
+
+        completed = sorted({
+            node_id
+            for progress in progress_rows
+            for node_id in (progress.completed_nodes or [])
+        })
+
         done, total = kg.get_completion_stats(completed)
         total_done += done
         total_concepts += total
-        
+
     return total_done, total_concepts
+
+
+def get_subject_completion_stats(player_id: int, db_session, subject: str) -> Tuple[int, int]:
+    kg = get_graph(subject)
+    if not kg or len(kg.graph.nodes) == 0:
+        return 0, 0
+
+    from .database import TopicProgress
+    from sqlalchemy import or_
+
+    subject_key = _canonical_subject_key(subject)
+    conditions = [TopicProgress.subject_key == subject_key]
+    for prefix in _subject_topic_prefixes(subject):
+        conditions.append(TopicProgress.topic_name.ilike(f"{prefix}%"))
+
+    progress_rows = db_session.query(TopicProgress).filter(
+        TopicProgress.player_id == player_id,
+        or_(*conditions),
+    ).all()
+
+    completed = sorted({
+        node_id
+        for progress in progress_rows
+        for node_id in (progress.completed_nodes or [])
+    })
+    return kg.get_completion_stats(completed)
