@@ -35,10 +35,10 @@ const BOOK_SPACING_X := 0.98
 const BOOK_BASE_Y := 1.08
 const BOOK_ROW_GAP := 1.22
 const SHELF_LAYOUT := {
-	"Math": Vector3(-4.2, 0.0, 4.8),
-	"Science": Vector3(4.2, 0.0, 4.8),
-	"History": Vector3(-4.2, 0.0, 9.1),
-	"English": Vector3(4.2, 0.0, 9.1)
+	"Math": Vector3(-5.0, 0.0, 4.2),
+	"Science": Vector3(5.0, 0.0, 4.2),
+	"History": Vector3(-5.0, 0.0, 11.2),
+	"English": Vector3(5.0, 0.0, 11.2)
 }
 const SHELF_FOCUS_POINT := Vector3(0.0, 0.0, 0.6)
 const BEACON_TEXT := {
@@ -62,8 +62,15 @@ var sidebar_panel: Panel
 var joystick_left: VirtualJoystick
 var joystick_right: VirtualJoystick
 var hud_role: Label
-var profile_window: Window
-var admin_window: Window
+var profile_overlay: ColorRect
+var profile_window: PanelContainer
+var profile_scroll: ScrollContainer
+var admin_overlay: ColorRect
+var admin_window: PanelContainer
+var admin_scroll: ScrollContainer
+var teacher_overlay: ColorRect
+var teacher_window: PanelContainer
+var teacher_scroll: ScrollContainer
 var sidebar_access_label: Label
 var profile_email_input: LineEdit
 var profile_avatar_option: OptionButton
@@ -71,6 +78,11 @@ var profile_openai_key_input: LineEdit
 var profile_clear_key_check: CheckBox
 var profile_key_hint_label: Label
 var profile_status_label: Label
+var teacher_request_username_input: LineEdit
+var teacher_request_note_input: LineEdit
+var teacher_request_button: Button
+var teacher_links_list: ItemList
+var teacher_link_status_label: Label
 var billing_plan_label: Label
 var billing_usage_label: Label
 var billing_payment_label: Label
@@ -81,6 +93,7 @@ var billing_hosted_button: Button
 var billing_byok_button: Button
 var billing_manage_button: Button
 var admin_access_button: Button
+var teacher_dashboard_button: Button
 var admin_status_label: Label
 var admin_revoke_reason_input: LineEdit
 var admin_code_assigned_input: LineEdit
@@ -99,6 +112,13 @@ var admin_code_list: ItemList
 var admin_grant_list: ItemList
 var admin_code_entries := []
 var admin_grant_entries := []
+var teacher_link_entries := []
+var teacher_pending_entries := []
+var teacher_student_entries := []
+var teacher_pending_list: ItemList
+var teacher_student_list: ItemList
+var teacher_detail_label: RichTextLabel
+var teacher_status_label: Label
 
 var shelf_progress_bars := {}
 var shelf_progress_labels := {}
@@ -153,7 +173,7 @@ func _ready():
 	# Connect player interaction
 	var player_scn = load("res://scenes/Player.tscn")
 	player = player_scn.instantiate()
-	player.position = Vector3(0, 0.5, 0)
+	player.position = Vector3(0.0, 0.85, 2.35)
 	player.interaction_requested.connect(_on_interaction)
 	add_child(player)
 
@@ -287,16 +307,23 @@ func setup_ui():
 	var mc = MarginContainer.new()
 	mc.set_anchors_preset(Control.PRESET_FULL_RECT)
 	mc.add_theme_constant_override("margin_left", 20)
-	mc.add_theme_constant_override("margin_top", 20)
+	mc.add_theme_constant_override("margin_top", 56)
 	mc.add_theme_constant_override("margin_right", 20)
 	mc.add_theme_constant_override("margin_bottom", 20)
 	sidebar_panel.add_child(mc)
 
 
 
+	var sidebar_scroll = ScrollContainer.new()
+	sidebar_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sidebar_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	sidebar_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	mc.add_child(sidebar_scroll)
+
 	var content_vbox = VBoxContainer.new()
+	content_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	content_vbox.add_theme_constant_override("separation", 15)
-	mc.add_child(content_vbox)
+	sidebar_scroll.add_child(content_vbox)
 
 	# 1. Player Stats
 	hud_xp = Label.new()
@@ -403,14 +430,22 @@ func setup_ui():
 	admin_access_button.pressed.connect(_on_admin_button_pressed)
 	content_vbox.add_child(admin_access_button)
 
+	teacher_dashboard_button = Button.new()
+	teacher_dashboard_button.text = "Teacher Dashboard"
+	teacher_dashboard_button.visible = false
+	teacher_dashboard_button.pressed.connect(_on_teacher_dashboard_pressed)
+	content_vbox.add_child(teacher_dashboard_button)
+
 	var exit_btn = Button.new()
-	exit_btn.text = "Main Menu"
-	exit_btn.pressed.connect(func(): get_tree().change_scene_to_file("res://scenes/Startup.tscn"))
+	exit_btn.text = "Logout"
+	exit_btn.pressed.connect(_logout_to_startup)
 	content_vbox.add_child(exit_btn)
 
 	_setup_profile_window()
 	_setup_admin_window()
+	_setup_teacher_window()
 	_refresh_admin_visibility()
+	_refresh_teacher_dashboard_visibility()
 
 	# Fetch Stats
 	fetch_stats()
@@ -449,6 +484,7 @@ func _on_stats_received(_code, response):
 			profile_role = str(stats["role"])
 		profile_is_admin = _extract_explicit_admin_flag(stats)
 		_refresh_admin_visibility()
+		_refresh_teacher_dashboard_visibility()
 
 		if stats.has("avatar_id"):
 			GameManager.player_avatar_id = str(stats["avatar_id"])
@@ -489,13 +525,31 @@ func _setup_profile_window():
 	if ui_canvas == null:
 		return
 
-	profile_window = Window.new()
-	profile_window.title = "Profile Settings"
-	profile_window.size = Vector2i(520, 620)
-	profile_window.unresizable = false
-	profile_window.close_requested.connect(func(): profile_window.hide())
-	ui_canvas.add_child(profile_window)
-	profile_window.hide()
+	profile_overlay = ColorRect.new()
+	profile_overlay.name = "ProfileOverlay"
+	profile_overlay.color = Color(0.02, 0.03, 0.05, 0.72)
+	profile_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	profile_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	ui_canvas.add_child(profile_overlay)
+	profile_overlay.hide()
+
+	profile_window = PanelContainer.new()
+	profile_window.name = "ProfileWindow"
+	profile_window.visible = false
+	profile_window.mouse_filter = Control.MOUSE_FILTER_STOP
+	var panel_style = StyleBoxFlat.new()
+	panel_style.bg_color = Color(0.13, 0.14, 0.16, 0.98)
+	panel_style.border_color = Color(0.52, 0.83, 1.0, 0.95)
+	panel_style.border_width_left = 2
+	panel_style.border_width_top = 2
+	panel_style.border_width_right = 2
+	panel_style.border_width_bottom = 2
+	panel_style.corner_radius_top_left = 14
+	panel_style.corner_radius_top_right = 14
+	panel_style.corner_radius_bottom_right = 14
+	panel_style.corner_radius_bottom_left = 14
+	profile_window.add_theme_stylebox_override("panel", panel_style)
+	profile_overlay.add_child(profile_window)
 
 	var root = VBoxContainer.new()
 	root.name = "ProfileVBox"
@@ -507,78 +561,142 @@ func _setup_profile_window():
 	root.add_theme_constant_override("separation", 10)
 	profile_window.add_child(root)
 
+	var header_row = HBoxContainer.new()
+	header_row.add_theme_constant_override("separation", 10)
+	root.add_child(header_row)
+
+	var header_label = Label.new()
+	header_label.text = "Profile Settings"
+	header_label.add_theme_font_size_override("font_size", 20)
+	header_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header_row.add_child(header_label)
+
+	var close_profile_button = Button.new()
+	close_profile_button.text = "Close"
+	close_profile_button.pressed.connect(_hide_profile_window)
+	header_row.add_child(close_profile_button)
+
+	root.add_child(HSeparator.new())
+
+	profile_scroll = ScrollContainer.new()
+	profile_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	profile_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	profile_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	root.add_child(profile_scroll)
+
+	var content = VBoxContainer.new()
+	content.add_theme_constant_override("separation", 10)
+	content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	content.custom_minimum_size = Vector2(0, 980)
+	profile_scroll.add_child(content)
+
 	var intro = Label.new()
 	intro.text = "Save a recovery email, switch avatars, bring your own OpenAI key, or manage your subscription."
 	intro.autowrap_mode = TextServer.AUTOWRAP_WORD
-	root.add_child(intro)
+	content.add_child(intro)
 
 	var email_label = Label.new()
 	email_label.text = "Recovery Email"
-	root.add_child(email_label)
+	content.add_child(email_label)
 
 	profile_email_input = LineEdit.new()
 	profile_email_input.placeholder_text = "parent@example.com"
 	profile_email_input.clear_button_enabled = true
-	root.add_child(profile_email_input)
+	content.add_child(profile_email_input)
 
 	var avatar_label = Label.new()
 	avatar_label.text = "Avatar"
-	root.add_child(avatar_label)
+	content.add_child(avatar_label)
 
 	profile_avatar_option = OptionButton.new()
 	profile_avatar_option.add_item("Girl Avatar", 0)
 	profile_avatar_option.add_item("Boy Avatar", 1)
-	root.add_child(profile_avatar_option)
+	content.add_child(profile_avatar_option)
 
 	var key_label = Label.new()
 	key_label.text = "OpenAI API Key"
-	root.add_child(key_label)
+	content.add_child(key_label)
 
 	profile_openai_key_input = LineEdit.new()
 	profile_openai_key_input.placeholder_text = "Leave blank to keep current key"
 	profile_openai_key_input.secret = true
 	profile_openai_key_input.clear_button_enabled = true
-	root.add_child(profile_openai_key_input)
+	content.add_child(profile_openai_key_input)
 
 	profile_key_hint_label = Label.new()
 	profile_key_hint_label.text = "No personal key saved."
 	profile_key_hint_label.modulate = Color(0.78, 0.85, 0.92, 0.82)
-	root.add_child(profile_key_hint_label)
+	content.add_child(profile_key_hint_label)
 
 	profile_clear_key_check = CheckBox.new()
 	profile_clear_key_check.text = "Remove saved personal key"
-	root.add_child(profile_clear_key_check)
+	content.add_child(profile_clear_key_check)
 
-	root.add_child(HSeparator.new())
+	content.add_child(HSeparator.new())
+
+	var teacher_title = Label.new()
+	teacher_title.text = "Teacher Connection"
+	teacher_title.add_theme_font_size_override("font_size", 18)
+	content.add_child(teacher_title)
+
+	var teacher_intro = Label.new()
+	teacher_intro.text = "Students can request a teacher here. Teachers must accept before they can view student progress."
+	teacher_intro.autowrap_mode = TextServer.AUTOWRAP_WORD
+	content.add_child(teacher_intro)
+
+	teacher_request_username_input = LineEdit.new()
+	teacher_request_username_input.placeholder_text = "Teacher username"
+	teacher_request_username_input.clear_button_enabled = true
+	content.add_child(teacher_request_username_input)
+
+	teacher_request_note_input = LineEdit.new()
+	teacher_request_note_input.placeholder_text = "Optional note to the teacher"
+	teacher_request_note_input.clear_button_enabled = true
+	content.add_child(teacher_request_note_input)
+
+	teacher_request_button = Button.new()
+	teacher_request_button.text = "Request Teacher Approval"
+	teacher_request_button.pressed.connect(_submit_teacher_request)
+	content.add_child(teacher_request_button)
+
+	teacher_links_list = ItemList.new()
+	teacher_links_list.custom_minimum_size = Vector2(0, 120)
+	content.add_child(teacher_links_list)
+
+	teacher_link_status_label = Label.new()
+	teacher_link_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD
+	content.add_child(teacher_link_status_label)
+
+	content.add_child(HSeparator.new())
 
 	var billing_title = Label.new()
 	billing_title.text = "Subscription"
 	billing_title.add_theme_font_size_override("font_size", 18)
-	root.add_child(billing_title)
+	content.add_child(billing_title)
 
 	billing_plan_label = Label.new()
 	billing_plan_label.text = "Subscription: loading..."
 	billing_plan_label.autowrap_mode = TextServer.AUTOWRAP_WORD
-	root.add_child(billing_plan_label)
+	content.add_child(billing_plan_label)
 
 	billing_usage_label = Label.new()
 	billing_usage_label.text = "Usage: -"
 	billing_usage_label.autowrap_mode = TextServer.AUTOWRAP_WORD
-	root.add_child(billing_usage_label)
+	content.add_child(billing_usage_label)
 
 	billing_payment_label = Label.new()
 	billing_payment_label.text = "Payment Method: -"
 	billing_payment_label.autowrap_mode = TextServer.AUTOWRAP_WORD
-	root.add_child(billing_payment_label)
+	content.add_child(billing_payment_label)
 
 	billing_access_label = Label.new()
 	billing_access_label.text = ""
 	billing_access_label.autowrap_mode = TextServer.AUTOWRAP_WORD
-	root.add_child(billing_access_label)
+	content.add_child(billing_access_label)
 
 	var access_code_row = HBoxContainer.new()
 	access_code_row.add_theme_constant_override("separation", 8)
-	root.add_child(access_code_row)
+	content.add_child(access_code_row)
 
 	billing_access_code_input = LineEdit.new()
 	billing_access_code_input.placeholder_text = "Redeem access code"
@@ -594,7 +712,7 @@ func _setup_profile_window():
 
 	var billing_button_box = VBoxContainer.new()
 	billing_button_box.add_theme_constant_override("separation", 6)
-	root.add_child(billing_button_box)
+	content.add_child(billing_button_box)
 
 	billing_hosted_button = Button.new()
 	billing_hosted_button.text = "Subscribe: Hosted AI"
@@ -613,11 +731,11 @@ func _setup_profile_window():
 
 	var button_row = HBoxContainer.new()
 	button_row.alignment = BoxContainer.ALIGNMENT_END
-	root.add_child(button_row)
+	content.add_child(button_row)
 
 	var cancel_btn = Button.new()
 	cancel_btn.text = "Close"
-	cancel_btn.pressed.connect(func(): profile_window.hide())
+	cancel_btn.pressed.connect(_hide_profile_window)
 	button_row.add_child(cancel_btn)
 
 	var save_btn = Button.new()
@@ -627,16 +745,25 @@ func _setup_profile_window():
 
 	profile_status_label = Label.new()
 	profile_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD
-	root.add_child(profile_status_label)
+	content.add_child(profile_status_label)
 
 
 func _is_admin_user() -> bool:
 	return profile_is_admin
 
 
+func _is_teacher_dashboard_user() -> bool:
+	return profile_role == "Teacher" or profile_is_admin
+
+
 func _refresh_admin_visibility():
 	if admin_access_button:
 		admin_access_button.visible = _is_admin_user()
+
+
+func _refresh_teacher_dashboard_visibility():
+	if teacher_dashboard_button:
+		teacher_dashboard_button.visible = _is_teacher_dashboard_user()
 
 
 func _create_admin_plan_option() -> OptionButton:
@@ -654,27 +781,70 @@ func _setup_admin_window():
 	if ui_canvas == null:
 		return
 
-	admin_window = Window.new()
-	admin_window.title = "Admin Access Management"
-	admin_window.size = Vector2i(860, 760)
-	admin_window.unresizable = false
-	admin_window.close_requested.connect(func(): admin_window.hide())
-	ui_canvas.add_child(admin_window)
-	admin_window.hide()
+	admin_overlay = ColorRect.new()
+	admin_overlay.name = "AdminOverlay"
+	admin_overlay.color = Color(0.02, 0.03, 0.05, 0.72)
+	admin_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	admin_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	ui_canvas.add_child(admin_overlay)
+	admin_overlay.hide()
 
-	var scroll = ScrollContainer.new()
-	scroll.set_anchors_preset(Control.PRESET_FULL_RECT)
-	scroll.offset_left = 14
-	scroll.offset_top = 14
-	scroll.offset_right = -14
-	scroll.offset_bottom = -14
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	admin_window.add_child(scroll)
+	admin_window = PanelContainer.new()
+	admin_window.name = "AdminWindow"
+	admin_window.visible = false
+	admin_window.mouse_filter = Control.MOUSE_FILTER_STOP
+	var panel_style = StyleBoxFlat.new()
+	panel_style.bg_color = Color(0.13, 0.14, 0.16, 0.98)
+	panel_style.border_color = Color(0.42, 0.83, 0.73, 0.95)
+	panel_style.border_width_left = 2
+	panel_style.border_width_top = 2
+	panel_style.border_width_right = 2
+	panel_style.border_width_bottom = 2
+	panel_style.corner_radius_top_left = 14
+	panel_style.corner_radius_top_right = 14
+	panel_style.corner_radius_bottom_right = 14
+	panel_style.corner_radius_bottom_left = 14
+	admin_window.add_theme_stylebox_override("panel", panel_style)
+	admin_overlay.add_child(admin_window)
+
+	var frame = VBoxContainer.new()
+	frame.name = "AdminFrame"
+	frame.set_anchors_preset(Control.PRESET_FULL_RECT)
+	frame.offset_left = 18
+	frame.offset_top = 18
+	frame.offset_right = -18
+	frame.offset_bottom = -18
+	frame.add_theme_constant_override("separation", 10)
+	admin_window.add_child(frame)
+
+	var header_row = HBoxContainer.new()
+	header_row.add_theme_constant_override("separation", 10)
+	frame.add_child(header_row)
+
+	var header_label = Label.new()
+	header_label.text = "Admin Access Management"
+	header_label.add_theme_font_size_override("font_size", 20)
+	header_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header_row.add_child(header_label)
+
+	var close_admin_button = Button.new()
+	close_admin_button.text = "Close"
+	close_admin_button.pressed.connect(_hide_admin_window)
+	header_row.add_child(close_admin_button)
+
+	frame.add_child(HSeparator.new())
+
+	admin_scroll = ScrollContainer.new()
+	admin_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	admin_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	admin_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	frame.add_child(admin_scroll)
 
 	var root = VBoxContainer.new()
 	root.add_theme_constant_override("separation", 10)
 	root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(root)
+	root.custom_minimum_size = Vector2(0, 900)
+	admin_scroll.add_child(root)
 
 	var intro = Label.new()
 	intro.text = "Create access codes, grant direct evaluator access, review active grants, and revoke access without leaving the app."
@@ -855,13 +1025,351 @@ func _setup_admin_window():
 	root.add_child(admin_status_label)
 
 
+func _setup_teacher_window():
+	if ui_canvas == null:
+		return
+
+	teacher_overlay = ColorRect.new()
+	teacher_overlay.name = "TeacherOverlay"
+	teacher_overlay.color = Color(0.02, 0.03, 0.05, 0.72)
+	teacher_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	teacher_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	ui_canvas.add_child(teacher_overlay)
+	teacher_overlay.hide()
+
+	teacher_window = PanelContainer.new()
+	teacher_window.name = "TeacherWindow"
+	teacher_window.visible = false
+	teacher_window.mouse_filter = Control.MOUSE_FILTER_STOP
+	var panel_style = StyleBoxFlat.new()
+	panel_style.bg_color = Color(0.13, 0.14, 0.16, 0.98)
+	panel_style.border_color = Color(0.97, 0.84, 0.46, 0.95)
+	panel_style.border_width_left = 2
+	panel_style.border_width_top = 2
+	panel_style.border_width_right = 2
+	panel_style.border_width_bottom = 2
+	panel_style.corner_radius_top_left = 14
+	panel_style.corner_radius_top_right = 14
+	panel_style.corner_radius_bottom_right = 14
+	panel_style.corner_radius_bottom_left = 14
+	teacher_window.add_theme_stylebox_override("panel", panel_style)
+	teacher_overlay.add_child(teacher_window)
+
+	var frame = VBoxContainer.new()
+	frame.set_anchors_preset(Control.PRESET_FULL_RECT)
+	frame.offset_left = 18
+	frame.offset_top = 18
+	frame.offset_right = -18
+	frame.offset_bottom = -18
+	frame.add_theme_constant_override("separation", 10)
+	teacher_window.add_child(frame)
+
+	var header_row = HBoxContainer.new()
+	header_row.add_theme_constant_override("separation", 10)
+	frame.add_child(header_row)
+
+	var header_label = Label.new()
+	header_label.text = "Teacher Dashboard"
+	header_label.add_theme_font_size_override("font_size", 20)
+	header_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header_row.add_child(header_label)
+
+	var close_teacher_button = Button.new()
+	close_teacher_button.text = "Close"
+	close_teacher_button.pressed.connect(_hide_teacher_window)
+	header_row.add_child(close_teacher_button)
+
+	frame.add_child(HSeparator.new())
+
+	teacher_scroll = ScrollContainer.new()
+	teacher_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	teacher_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	teacher_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	frame.add_child(teacher_scroll)
+
+	var root = VBoxContainer.new()
+	root.add_theme_constant_override("separation", 10)
+	root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	root.custom_minimum_size = Vector2(0, 960)
+	teacher_scroll.add_child(root)
+
+	var intro = Label.new()
+	intro.text = "Accept student requests, review linked learners, and inspect detailed progress without leaving the library."
+	intro.autowrap_mode = TextServer.AUTOWRAP_WORD
+	root.add_child(intro)
+
+	var pending_title = Label.new()
+	pending_title.text = "Pending Student Requests"
+	pending_title.add_theme_font_size_override("font_size", 18)
+	root.add_child(pending_title)
+
+	teacher_pending_list = ItemList.new()
+	teacher_pending_list.select_mode = ItemList.SELECT_SINGLE
+	teacher_pending_list.custom_minimum_size = Vector2(0, 150)
+	root.add_child(teacher_pending_list)
+
+	var pending_buttons = HBoxContainer.new()
+	pending_buttons.add_theme_constant_override("separation", 8)
+	root.add_child(pending_buttons)
+
+	var accept_button = Button.new()
+	accept_button.text = "Accept Selected Request"
+	accept_button.pressed.connect(func(): _respond_to_selected_teacher_request("ACCEPTED"))
+	pending_buttons.add_child(accept_button)
+
+	var reject_button = Button.new()
+	reject_button.text = "Reject Selected Request"
+	reject_button.pressed.connect(func(): _respond_to_selected_teacher_request("REJECTED"))
+	pending_buttons.add_child(reject_button)
+
+	root.add_child(HSeparator.new())
+
+	var student_title = Label.new()
+	student_title.text = "Accepted Students"
+	student_title.add_theme_font_size_override("font_size", 18)
+	root.add_child(student_title)
+
+	teacher_student_list = ItemList.new()
+	teacher_student_list.select_mode = ItemList.SELECT_SINGLE
+	teacher_student_list.custom_minimum_size = Vector2(0, 180)
+	teacher_student_list.item_selected.connect(_load_selected_teacher_student)
+	root.add_child(teacher_student_list)
+
+	var refresh_button = Button.new()
+	refresh_button.text = "Refresh Dashboard"
+	refresh_button.pressed.connect(_refresh_teacher_dashboard)
+	root.add_child(refresh_button)
+
+	teacher_detail_label = RichTextLabel.new()
+	teacher_detail_label.custom_minimum_size = Vector2(0, 320)
+	teacher_detail_label.fit_content = false
+	teacher_detail_label.scroll_active = true
+	teacher_detail_label.bbcode_enabled = false
+	teacher_detail_label.text = "Select a student to view detailed progress."
+	root.add_child(teacher_detail_label)
+
+	teacher_status_label = Label.new()
+	teacher_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD
+	root.add_child(teacher_status_label)
+
+
+func _on_teacher_dashboard_pressed():
+	if teacher_window == null or not _is_teacher_dashboard_user():
+		return
+
+	teacher_status_label.text = "Loading teacher dashboard..."
+	teacher_detail_label.text = "Select a student to view detailed progress."
+	var viewport_rect = get_viewport().get_visible_rect().size
+	var available_size = Vector2(
+		max(viewport_rect.x - 28.0, 320.0),
+		max(viewport_rect.y - 28.0, 280.0)
+	)
+	var target_size = Vector2(
+		min(860.0, available_size.x),
+		min(720.0, available_size.y)
+	)
+	target_size.x = max(target_size.x, min(560.0, available_size.x))
+	target_size.y = max(target_size.y, min(420.0, available_size.y))
+	teacher_overlay.show()
+	teacher_window.show()
+	teacher_window.size = target_size
+	teacher_window.position = Vector2(
+		floor((viewport_rect.x - target_size.x) * 0.5),
+		max(18.0, floor((viewport_rect.y - target_size.y) * 0.5))
+	)
+	if teacher_scroll:
+		teacher_scroll.scroll_vertical = 0
+	_refresh_teacher_dashboard()
+
+
+func _hide_teacher_window():
+	if teacher_window:
+		teacher_window.hide()
+	if teacher_overlay:
+		teacher_overlay.hide()
+
+
+func _refresh_teacher_dashboard():
+	if teacher_status_label == null:
+		return
+	teacher_status_label.text = "Refreshing teacher dashboard..."
+	var payload = {"username": GameManager.player_username}
+	NetworkManager.post_request("/teacher_dashboard", payload, _on_teacher_dashboard_loaded, func(_code, err):
+		teacher_status_label.text = err if err != "" else "Unable to load teacher dashboard."
+	)
+
+
+func _on_teacher_dashboard_loaded(_code, response):
+	teacher_pending_entries = response.get("pending_requests", [])
+	teacher_student_entries = response.get("accepted_students", [])
+
+	if teacher_pending_list:
+		teacher_pending_list.clear()
+		for entry in teacher_pending_entries:
+			var note_text = str(entry.get("request_note", "")).strip_edges()
+			var display = str(entry.get("student_username", "student"))
+			if note_text != "":
+				display += " | " + note_text
+			teacher_pending_list.add_item(display)
+
+	if teacher_student_list:
+		teacher_student_list.clear()
+		for entry in teacher_student_entries:
+			var completion = "%.1f%%" % float(entry.get("grade_completion", 0.0))
+			var display_name = str(entry.get("display_name", entry.get("username", "student")))
+			teacher_student_list.add_item(display_name + " | Grade " + str(entry.get("grade_level", "?")) + " | " + completion)
+
+	if teacher_status_label:
+		teacher_status_label.text = "Pending requests: %d | Linked students: %d" % [teacher_pending_entries.size(), teacher_student_entries.size()]
+	if teacher_student_entries.size() == 0 and teacher_detail_label:
+		teacher_detail_label.text = "No accepted students yet."
+	elif teacher_student_entries.size() > 0 and teacher_student_list and teacher_student_list.get_selected_items().is_empty():
+		teacher_student_list.select(0)
+		_load_selected_teacher_student(0)
+
+
+func _respond_to_selected_teacher_request(action: String):
+	if teacher_pending_list == null or teacher_status_label == null:
+		return
+	var selected = teacher_pending_list.get_selected_items()
+	if selected.is_empty():
+		teacher_status_label.text = "Select a pending request first."
+		return
+
+	var entry = teacher_pending_entries[selected[0]]
+	var payload = {
+		"username": GameManager.player_username,
+		"link_id": int(entry.get("id", -1)),
+		"action": action,
+		"response_note": ""
+	}
+	teacher_status_label.text = "Updating request..."
+	NetworkManager.post_request("/respond_teacher_link", payload, func(_code, _response):
+		teacher_status_label.text = "Request updated."
+		_refresh_teacher_dashboard()
+		_fetch_teacher_links()
+	, func(_code, err):
+		teacher_status_label.text = err if err != "" else "Unable to update teacher request."
+	)
+
+
+func _load_selected_teacher_student(index: int):
+	if index < 0 or index >= teacher_student_entries.size():
+		return
+	var entry = teacher_student_entries[index]
+	var payload = {
+		"username": GameManager.player_username,
+		"student_username": str(entry.get("username", ""))
+	}
+	teacher_status_label.text = "Loading student progress..."
+	NetworkManager.post_request("/teacher_student_progress", payload, _on_teacher_student_progress_loaded, func(_code, err):
+		teacher_status_label.text = err if err != "" else "Unable to load student progress."
+	)
+
+
+func _format_teacher_duration(total_seconds: int) -> String:
+	var seconds = max(total_seconds, 0)
+	var hours = int(seconds / 3600)
+	var minutes = int((seconds % 3600) / 60)
+	if hours > 0:
+		return "%dh %dm" % [hours, minutes]
+	return "%dm" % [minutes]
+
+
+func _on_teacher_student_progress_loaded(_code, response):
+	if teacher_detail_label == null:
+		return
+
+	var student = response.get("student", {})
+	var subject_completion = student.get("subject_completion", {})
+	var subjects_line = "Math %.1f%% | Science %.1f%% | History %.1f%% | English %.1f%%" % [
+		float(subject_completion.get("Math", 0.0)),
+		float(subject_completion.get("Science", 0.0)),
+		float(subject_completion.get("Social_Studies", 0.0)),
+		float(subject_completion.get("ELA", 0.0))
+	]
+
+	var detail_lines = []
+	detail_lines.append(str(student.get("display_name", student.get("username", "Student"))))
+	detail_lines.append("Username: " + str(student.get("username", "")))
+	detail_lines.append("Grade: " + str(student.get("grade_level", "?")))
+	detail_lines.append("Current Topic: " + str(student.get("current_topic", "None")))
+	detail_lines.append("Current Node: " + str(student.get("current_node", "None")))
+	detail_lines.append("Grade Completion: %.1f%%" % float(student.get("grade_completion", 0.0)))
+	detail_lines.append("Correct Rate: %.1f%% | Avg Score: %.1f%%" % [
+		float(student.get("correct_rate_percent", 0.0)),
+		float(student.get("average_score_percent", 0.0))
+	])
+	detail_lines.append("Login Time: " + _format_teacher_duration(int(student.get("total_login_seconds", 0))) + " | Learning Time: " + _format_teacher_duration(int(student.get("total_learning_seconds", 0))))
+	detail_lines.append("Sessions: %d | Requests: %d | Chat Turns: %d" % [
+		int(student.get("session_count", 0)),
+		int(student.get("total_request_count", 0)),
+		int(student.get("total_chat_turns", 0))
+	])
+	detail_lines.append(subjects_line)
+	detail_lines.append("")
+	detail_lines.append("Topic Progress")
+
+	var shown_topics = 0
+	for topic in response.get("topics", []):
+		if shown_topics >= 8:
+			break
+		detail_lines.append("- %s | %s | mastery %d%% | node %s | avg %.1f%%" % [
+			str(topic.get("topic_name", "")),
+			str(topic.get("status", "")),
+			int(topic.get("mastery_score", 0)),
+			str(topic.get("current_node", "None")),
+			float(topic.get("average_score_percent", 0.0))
+		])
+		shown_topics += 1
+
+	detail_lines.append("")
+	detail_lines.append("Recent Node Activity")
+	var shown_nodes = 0
+	for node in response.get("nodes", []):
+		if shown_nodes >= 10:
+			break
+		detail_lines.append("- %s | %s | attempts %d | avg %.1f%% | status %s" % [
+			str(node.get("topic_name", "")),
+			str(node.get("node_id", "")),
+			int(node.get("attempt_count", 0)),
+			float(node.get("average_score_percent", 0.0)),
+			str(node.get("status", ""))
+		])
+		shown_nodes += 1
+
+	teacher_detail_label.text = "\n".join(detail_lines)
+	if teacher_status_label:
+		teacher_status_label.text = "Detailed progress loaded."
+
+
 func _on_profile_button_pressed():
 	if profile_window == null:
 		return
 
 	profile_status_label.text = "Loading profile..."
-	profile_window.popup_centered()
+	var viewport_rect = get_viewport().get_visible_rect().size
+	var available_size = Vector2(
+		max(viewport_rect.x - 28.0, 320.0),
+		max(viewport_rect.y - 28.0, 280.0)
+	)
+	var target_size = Vector2(
+		min(560.0, available_size.x),
+		min(700.0, available_size.y)
+	)
+	target_size.x = max(target_size.x, min(460.0, available_size.x))
+	target_size.y = max(target_size.y, min(420.0, available_size.y))
+	profile_overlay.show()
+	profile_window.show()
+	profile_window.size = target_size
+	profile_window.position = Vector2(
+		floor((viewport_rect.x - target_size.x) * 0.5),
+		max(18.0, floor((viewport_rect.y - target_size.y) * 0.5))
+	)
+	if profile_scroll:
+		profile_scroll.scroll_vertical = 0
 	_fetch_profile()
+	_fetch_teacher_links()
 	_fetch_billing_status()
 
 
@@ -870,8 +1378,68 @@ func _on_admin_button_pressed():
 		return
 
 	admin_status_label.text = "Loading admin data..."
-	admin_window.popup_centered()
+	var viewport_rect = get_viewport().get_visible_rect().size
+	var available_size = Vector2(
+		max(viewport_rect.x - 28.0, 320.0),
+		max(viewport_rect.y - 28.0, 280.0)
+	)
+	var target_size = Vector2(
+		min(820.0, available_size.x),
+		min(680.0, available_size.y)
+	)
+	target_size.x = max(target_size.x, min(520.0, available_size.x))
+	target_size.y = max(target_size.y, min(420.0, available_size.y))
+	admin_overlay.show()
+	admin_window.show()
+	admin_window.size = target_size
+	admin_window.position = Vector2(
+		floor((viewport_rect.x - target_size.x) * 0.5),
+		max(18.0, floor((viewport_rect.y - target_size.y) * 0.5))
+	)
+	if admin_scroll:
+		admin_scroll.scroll_vertical = 0
 	_refresh_admin_lists()
+
+
+func _hide_admin_window():
+	if admin_window:
+		admin_window.hide()
+	if admin_overlay:
+		admin_overlay.hide()
+
+
+func _hide_profile_window():
+	if profile_window:
+		profile_window.hide()
+	if profile_overlay:
+		profile_overlay.hide()
+
+
+func _logout_to_startup():
+	_hide_profile_window()
+	_hide_admin_window()
+	_hide_teacher_window()
+	var logout_username = GameManager.player_username
+	if NetworkManager.auth_token != "" and logout_username != "":
+		NetworkManager.post_request("/logout", {"username": logout_username}, func(_code, _response):
+			_finish_logout_to_startup()
+		, func(_code, _err):
+			_finish_logout_to_startup()
+		)
+		return
+	_finish_logout_to_startup()
+
+
+func _finish_logout_to_startup():
+	NetworkManager.auth_token = ""
+	NetworkManager.session_id = ""
+	NetworkManager.current_username = "Player1"
+	GameManager.current_topic = ""
+	GameManager.player_username = "Player1"
+	GameManager.player_grade = -1
+	GameManager.manual_selection_mode = false
+	GameManager.password_cache = ""
+	get_tree().change_scene_to_file("res://scenes/Startup.tscn")
 
 
 func _fetch_profile():
@@ -904,8 +1472,78 @@ func _on_profile_loaded(_code, response):
 		profile_openai_key_input.text = ""
 	if profile_clear_key_check:
 		profile_clear_key_check.button_pressed = false
+	if teacher_request_button:
+		teacher_request_button.disabled = profile_role != "Student"
+		teacher_request_button.text = "Request Teacher Approval" if profile_role == "Student" else "Teacher requests are student-only"
+	if teacher_request_username_input:
+		teacher_request_username_input.editable = profile_role == "Student"
+	if teacher_request_note_input:
+		teacher_request_note_input.editable = profile_role == "Student"
 	if profile_status_label:
 		profile_status_label.text = ""
+
+
+func _fetch_teacher_links():
+	var data = {"username": GameManager.player_username}
+	NetworkManager.post_request("/list_teacher_links", data, _on_teacher_links_loaded, func(_code, err):
+		if teacher_link_status_label:
+			teacher_link_status_label.text = err if err != "" else "Unable to load teacher links."
+	)
+
+
+func _on_teacher_links_loaded(_code, response):
+	teacher_link_entries = response.get("links", [])
+	if teacher_links_list:
+		teacher_links_list.clear()
+		for entry in teacher_link_entries:
+			var teacher_name = str(entry.get("teacher_username", "teacher"))
+			var student_name = str(entry.get("student_username", "student"))
+			var status = str(entry.get("status", "PENDING"))
+			var display = teacher_name + " -> " + student_name + " [" + status + "]"
+			if profile_role == "Student":
+				display = teacher_name + " [" + status + "]"
+			teacher_links_list.add_item(display)
+
+	if teacher_link_status_label:
+		if teacher_link_entries.is_empty():
+			teacher_link_status_label.text = "No teacher connections yet."
+		else:
+			teacher_link_status_label.text = "Teacher links loaded."
+
+
+func _submit_teacher_request():
+	if teacher_request_button == null or teacher_link_status_label == null:
+		return
+	if profile_role != "Student":
+		teacher_link_status_label.text = "Only student accounts can request a teacher."
+		return
+
+	var teacher_username = teacher_request_username_input.text.strip_edges() if teacher_request_username_input else ""
+	if teacher_username == "":
+		teacher_link_status_label.text = "Enter a teacher username first."
+		return
+
+	teacher_request_button.disabled = true
+	teacher_link_status_label.text = "Sending teacher request..."
+	var payload = {
+		"username": GameManager.player_username,
+		"teacher_username": teacher_username,
+		"request_note": teacher_request_note_input.text.strip_edges() if teacher_request_note_input else ""
+	}
+	NetworkManager.post_request("/request_teacher_link", payload, func(_code, _response):
+		if teacher_request_username_input:
+			teacher_request_username_input.text = ""
+		if teacher_request_note_input:
+			teacher_request_note_input.text = ""
+		if teacher_request_button:
+			teacher_request_button.disabled = false
+		teacher_link_status_label.text = "Teacher request sent."
+		_fetch_teacher_links()
+	, func(_code, err):
+		if teacher_request_button:
+			teacher_request_button.disabled = false
+		teacher_link_status_label.text = err if err != "" else "Unable to send teacher request."
+	)
 
 
 func _fetch_billing_status():
@@ -1429,6 +2067,7 @@ func setup_full_library():
 	floor_col.position = Vector3(0, -0.5, 0)
 	floor_body.add_child(floor_col)
 	add_child(floor_body)
+	_setup_play_area_collision()
 
 	# Lighting tuned for readable shelves/cards/books.
 	var env = WorldEnvironment.new()
@@ -1488,6 +2127,17 @@ func _setup_grand_hall():
 	central_plaza.position = Vector3(0.0, 0.02, 2.35)
 	add_child(central_plaza)
 
+	var plaza_body = StaticBody3D.new()
+	central_plaza.add_child(plaza_body)
+
+	var plaza_collision = CollisionShape3D.new()
+	var plaza_shape = CylinderShape3D.new()
+	plaza_shape.radius = 2.55
+	plaza_shape.height = 0.1
+	plaza_collision.shape = plaza_shape
+	plaza_collision.position = Vector3(0.0, 0.05, 0.0)
+	plaza_body.add_child(plaza_collision)
+
 	var floor_disc = MeshInstance3D.new()
 	var disc_mesh = CylinderMesh.new()
 	disc_mesh.top_radius = 2.55
@@ -1518,42 +2168,37 @@ func _setup_grand_hall():
 
 	var title = Label3D.new()
 	title.text = "ADAPTIVE TUTOR"
-	title.font_size = 96
-	title.outline_size = 18
-	title.position = Vector3(0.0, 2.8, 1.1)
-	title.modulate = Color(0.96, 0.98, 1.0, 0.98)
+	title.font_size = 60
+	title.outline_size = 14
+	title.billboard = BaseMaterial3D.BILLBOARD_FIXED_Y
+	title.position = Vector3(0.0, 3.95, 8.8)
+	title.modulate = Color(0.96, 0.98, 1.0, 0.9)
 	add_child(title)
 	_register_animated_hall_node(title, "float")
 
 	var subtitle = Label3D.new()
 	subtitle.text = "Choose a shelf or resume your path from the center aisle"
-	subtitle.font_size = 34
+	subtitle.font_size = 20
 	subtitle.outline_size = 8
-	subtitle.position = Vector3(0.0, 2.2, 1.18)
-	subtitle.modulate = Color(0.74, 0.85, 0.98, 0.92)
+	subtitle.billboard = BaseMaterial3D.BILLBOARD_FIXED_Y
+	subtitle.position = Vector3(0.0, 3.45, 8.95)
+	subtitle.modulate = Color(0.74, 0.85, 0.98, 0.8)
 	add_child(subtitle)
 	_register_animated_hall_node(subtitle, "float")
 
-	var beacon = MeshInstance3D.new()
-	var beacon_mesh = SphereMesh.new()
-	beacon_mesh.radius = 0.26
-	beacon_mesh.height = 0.52
-	beacon.mesh = beacon_mesh
-	beacon.position = Vector3(0.0, 1.15, 0.0)
-	var beacon_mat = _build_material(Color(0.78, 0.92, 1.0), 0.05, 0.0)
-	beacon_mat.emission_enabled = true
-	beacon_mat.emission = Color(0.58, 0.86, 1.0)
-	beacon_mat.emission_energy_multiplier = 1.4
-	beacon.material_override = beacon_mat
-	central_plaza.add_child(beacon)
-	_register_animated_hall_node(beacon, "hover")
+	var avatar_fill_light = OmniLight3D.new()
+	avatar_fill_light.position = Vector3(0.0, 1.95, 1.9)
+	avatar_fill_light.omni_range = 8.5
+	avatar_fill_light.light_energy = 2.0
+	avatar_fill_light.light_color = Color(1.0, 0.94, 0.86)
+	central_plaza.add_child(avatar_fill_light)
 
-	var beacon_light = OmniLight3D.new()
-	beacon_light.position = Vector3(0.0, 1.35, 0.0)
-	beacon_light.omni_range = 7.5
-	beacon_light.light_energy = 2.2
-	beacon_light.light_color = Color(0.68, 0.88, 1.0)
-	central_plaza.add_child(beacon_light)
+	var avatar_rim_light = OmniLight3D.new()
+	avatar_rim_light.position = Vector3(0.0, 2.1, -1.7)
+	avatar_rim_light.omni_range = 6.8
+	avatar_rim_light.light_energy = 0.95
+	avatar_rim_light.light_color = Color(0.64, 0.82, 1.0)
+	central_plaza.add_child(avatar_rim_light)
 
 	for subject in SUBJECT_ORDER:
 		var accent = _subject_theme(subject)["accent"]
@@ -1617,6 +2262,7 @@ func _setup_subject_beacons():
 		sign.text = subject.to_upper() + "\n" + BEACON_TEXT[subject]
 		sign.font_size = 36
 		sign.outline_size = 10
+		sign.billboard = BaseMaterial3D.BILLBOARD_FIXED_Y
 		sign.position = anchor + Vector3(0.0, 3.65, 0.0)
 		sign.modulate = Color(1.0, 1.0, 1.0, 0.95)
 		add_child(sign)
@@ -1844,7 +2490,7 @@ func _create_subject_selector_card(shelf_area: Node3D, category: String, base_co
 
 	var selector_mesh = MeshInstance3D.new()
 	var selector_box = BoxMesh.new()
-	selector_box.size = Vector3(2.7, 0.95, 0.15)
+	selector_box.size = Vector3(3.8, 1.08, 0.15)
 	selector_mesh.mesh = selector_box
 	var selector_mat = _build_material(base_color.darkened(0.12), 0.32, 0.05)
 	selector_mat.emission_enabled = true
@@ -1856,31 +2502,31 @@ func _create_subject_selector_card(shelf_area: Node3D, category: String, base_co
 
 	var selector_col = CollisionShape3D.new()
 	var selector_shape = BoxShape3D.new()
-	selector_shape.size = Vector3(2.75, 0.98, 0.24)
+	selector_shape.size = Vector3(3.9, 1.12, 0.24)
 	selector_col.shape = selector_shape
 	selector.add_child(selector_col)
 
 	var title = Label3D.new()
 	title.text = category + " SHELF"
-	title.font_size = 52
+	title.font_size = 40
 	title.outline_size = 10
-	title.position = Vector3(0, 0.13, 0.09)
+	title.position = Vector3(0, 0.18, 0.09)
 	title.modulate = Color(1.0, 1.0, 1.0, 0.95)
 	selector.add_child(title)
 
 	var hint = Label3D.new()
 	hint.text = "Click to resume"
-	hint.font_size = 30
+	hint.font_size = 24
 	hint.outline_size = 6
-	hint.position = Vector3(0, -0.17, 0.09)
+	hint.position = Vector3(0, -0.11, 0.09)
 	hint.modulate = Color(1.0, 1.0, 1.0, 0.72)
 	selector.add_child(hint)
 
 	var progress_label = Label3D.new()
 	progress_label.text = "0% complete"
-	progress_label.font_size = 27
+	progress_label.font_size = 22
 	progress_label.outline_size = 5
-	progress_label.position = Vector3(0, -0.43, 0.09)
+	progress_label.position = Vector3(0, -0.36, 0.09)
 	progress_label.modulate = accent_color.lightened(0.4)
 	selector.add_child(progress_label)
 	subject_selector_progress_labels[category] = progress_label
@@ -1929,7 +2575,7 @@ func _create_textbook(category: String, level: int, base_color: Color, accent_co
 	level_label.text = str(level)
 	level_label.font_size = 56
 	level_label.outline_size = 10
-	level_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	level_label.billboard = BaseMaterial3D.BILLBOARD_FIXED_Y
 	level_label.position = Vector3(0, 0.1, 0.51)
 	level_label.modulate = Color(1.0, 1.0, 1.0, 0.92)
 	book_area.add_child(level_label)
@@ -1938,7 +2584,7 @@ func _create_textbook(category: String, level: int, base_color: Color, accent_co
 	code_label.text = _subject_theme(category)["code"]
 	code_label.font_size = 24
 	code_label.outline_size = 6
-	code_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	code_label.billboard = BaseMaterial3D.BILLBOARD_FIXED_Y
 	code_label.position = Vector3(0, -0.2, 0.51)
 	code_label.modulate = Color(1.0, 1.0, 1.0, 0.8)
 	book_area.add_child(code_label)
@@ -2014,6 +2660,24 @@ func _create_shelf_progress_display(shelf_area: Node3D, category: String, accent
 
 	shelf_progress_bars[category] = progress
 	shelf_progress_labels[category] = percent
+
+
+func _setup_play_area_collision():
+	_add_boundary_wall(Vector3(0.0, 2.8, -2.4), Vector3(20.0, 5.6, 0.45))
+	_add_boundary_wall(Vector3(0.0, 2.8, 16.25), Vector3(20.0, 5.6, 0.45))
+	_add_boundary_wall(Vector3(-9.4, 2.8, 6.9), Vector3(0.45, 5.6, 20.0))
+	_add_boundary_wall(Vector3(9.4, 2.8, 6.9), Vector3(0.45, 5.6, 20.0))
+
+
+func _add_boundary_wall(center: Vector3, size: Vector3):
+	var wall = StaticBody3D.new()
+	var shape = CollisionShape3D.new()
+	var box = BoxShape3D.new()
+	box.size = size
+	shape.shape = box
+	shape.position = center
+	wall.add_child(shape)
+	add_child(wall)
 
 func _setup_focus_ring():
 	focus_ring = MeshInstance3D.new()
@@ -2318,7 +2982,7 @@ func _update_focus_ring_material(accent: Color):
 
 func setup_college_portal():
 	var portal = Area3D.new()
-	portal.position = Vector3(0, 1, 12)
+	portal.position = Vector3(0, 1, 14.0)
 	add_child(portal)
 
 	var mesh = MeshInstance3D.new()
@@ -2346,6 +3010,7 @@ func setup_college_portal():
 	label.text = "College Portal"
 	label.position = Vector3(0, 2.0, 0)
 	label.outline_size = 8
+	label.billboard = BaseMaterial3D.BILLBOARD_FIXED_Y
 	portal.add_child(label)
 
 	portal.body_entered.connect(_on_portal_entered)

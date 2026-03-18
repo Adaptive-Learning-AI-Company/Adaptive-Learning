@@ -12,6 +12,7 @@ from .knowledge_graph import get_graph, get_all_subjects_stats
 from .config import load_local_env
 from .billing import get_hosted_models
 from .profile_security import decrypt_profile_secret
+from .student_tracking import mark_node_mastered, record_answer_evaluation, touch_current_node
 import json 
 
 load_local_env()
@@ -127,6 +128,37 @@ def _extract_usage_metrics(message) -> tuple[int | None, int | None]:
 
     return input_tokens, output_tokens
 
+
+def _normalize_score_percent(value, fallback: int) -> int:
+    try:
+        score = int(value)
+    except (TypeError, ValueError):
+        score = fallback
+    return max(0, min(score, 100))
+
+
+def _parse_verifier_response(raw_content: str) -> tuple[bool, int, str]:
+    fallback_is_correct = "[CORRECT]" in raw_content.upper() and "[INCORRECT]" not in raw_content.upper()
+    fallback_score = 100 if fallback_is_correct else 0
+    feedback = raw_content.strip()
+
+    try:
+        parsed = json.loads(raw_content)
+        result = str(parsed.get("result", "")).strip().upper()
+        is_correct = result == "CORRECT"
+        if result not in {"CORRECT", "INCORRECT"}:
+            is_correct = fallback_is_correct
+        score_percent = _normalize_score_percent(parsed.get("score_percent"), 100 if is_correct else fallback_score)
+        feedback = str(parsed.get("feedback", "")).strip() or feedback
+    except Exception:
+        is_correct = fallback_is_correct
+        score_percent = fallback_score
+
+    token = "[CORRECT]" if is_correct else "[INCORRECT]"
+    if token not in feedback:
+        feedback = token + " " + feedback
+    return is_correct, score_percent, feedback
+
 # Nodes
 def supervisor_node(state: AgentState):
     messages = state['messages']
@@ -225,11 +257,14 @@ def teacher_node(state: AgentState):
                     candidates = kg.get_next_learnable_nodes(completed, target_grade=target_grade)
                     if candidates:
                         current_node = candidates[0]
-                        prog.current_node = current_node.id
+                        touch_current_node(db, player, state['topic'], current_node.id)
                         db.commit()
                         print(f"[KG] Teaching Next Node: {current_node.label}")
                     else:
                         print("[KG] No more nodes or all complete!")
+                elif current_node:
+                    touch_current_node(db, player, state['topic'], current_node.id)
+                    db.commit()
     finally:
         db.close()
     
@@ -330,6 +365,7 @@ def teacher_node(state: AgentState):
         output_tokens=output_tokens,
         latency_ms=latency_ms,
         billing_source=teacher_billing_source,
+        event_type="teacher_explanation",
     )
     
     done_unit, total_unit = 0, 0
@@ -454,6 +490,7 @@ def problem_node(state: AgentState):
         output_tokens=output_tokens,
         latency_ms=latency_ms,
         billing_source=problem_billing_source,
+        event_type="problem_generated",
     )
     
     return {"messages": [response], "current_action": "PROBLEM_GIVEN", "last_problem": response.content, "next_dest": "END"}
@@ -476,6 +513,7 @@ def verifier_node(state: AgentState):
         state,
         DEFAULT_MAIN_MODEL,
         allow_preferred_model=True,
+        model_kwargs={"response_format": {"type": "json_object"}},
     )
     start_time = time.perf_counter()
     response = verifier_llm.invoke([SystemMessage(content=prompt)])
@@ -483,25 +521,49 @@ def verifier_node(state: AgentState):
     input_tokens, output_tokens = _extract_usage_metrics(response)
     content = response.content
     print(f"RESPONSE:\n{content}\n")
+    is_correct, score_percent, feedback = _parse_verifier_response(content)
+    current_node_id = _current_node_id_for_state(state)
     
     log_interaction(
         state.get("username"),
         _subject_key_for_topic(state.get("topic")),
         last_answer,
-        content,
+        feedback,
         "verifier",
         session_id=state.get("session_id"),
         topic_name=state.get("topic"),
-        node_id=_current_node_id_for_state(state),
+        node_id=current_node_id,
         model_name=verifier_model_name,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         latency_ms=latency_ms,
         billing_source=verifier_billing_source,
+        event_type="answer_evaluation",
+        score_percent=score_percent,
+        is_correct=is_correct,
     )
+
+    db = SessionLocal()
+    try:
+        player = db.query(Player).filter(Player.username == state.get("username")).first()
+        if player and state.get("topic"):
+            record_answer_evaluation(
+                db,
+                player=player,
+                topic_name=state.get("topic"),
+                node_id=current_node_id,
+                is_correct=is_correct,
+                score_percent=score_percent,
+                problem=problem_context,
+                answer=last_answer,
+                feedback=feedback,
+            )
+            db.commit()
+    finally:
+        db.close()
     
     # Pass to Adapter
-    return {"messages": [response], "next_dest": "ADAPTER"}
+    return {"messages": [AIMessage(content=feedback)], "next_dest": "ADAPTER"}
 
 def adapter_node(state: AgentState):
     """
@@ -549,6 +611,9 @@ def adapter_node(state: AgentState):
         # Mark Complete in DB
         kg = get_graph(topic)
         completed = []
+        done_unit, total_unit = 0, 0
+        done_subj, total_subj = 0, 0
+        done_grade, total_grade = 0, 0
         db = SessionLocal()
         try:
              player = db.query(Player).filter(Player.username == user).first()
@@ -558,13 +623,12 @@ def adapter_node(state: AgentState):
                     TopicProgress.topic_name == topic
                 ).first()
                 if prog and prog.current_node:
+                    current_node_id = prog.current_node
+                    mark_node_mastered(db, player, topic, current_node_id)
+                    db.flush()
+                    db.refresh(prog)
                     completed = list(prog.completed_nodes) if prog.completed_nodes else []
-                    if prog.current_node not in completed:
-                        completed.append(prog.current_node)
-                        prog.completed_nodes = completed
-                        prog.current_node = None
-                        db.commit()
-                        print(f"[KG] Node Mastered by Adapter!")
+                    print(f"[KG] Node Mastered by Adapter!")
                         
                     # Calculate Multi-Level Mastery
                     subtree_root = None
@@ -662,6 +726,7 @@ def chat_node(state: AgentState):
         output_tokens=output_tokens,
         latency_ms=latency_ms,
         billing_source=chat_billing_source,
+        event_type="general_chat",
     )
     
     return {"messages": [response], "next_dest": "END"}

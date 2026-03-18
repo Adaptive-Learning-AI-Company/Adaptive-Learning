@@ -35,6 +35,9 @@ class LoginRequest(BaseModel):
     username: str
     password: str
 
+class LogoutRequest(BaseModel):
+    username: str
+
 class PasswordResetRequest(BaseModel):
     username: str # Allow finding by username (since children might not know parent email)
     # OR email? User said "from email addresses retrieved from the userid".
@@ -135,6 +138,134 @@ class ProfileResponse(BaseModel):
     password_changed_at: Optional[datetime] = None
     last_password_reset_requested_at: Optional[datetime] = None
     openai_api_key_updated_at: Optional[datetime] = None
+
+
+class TeacherLinkRequest(BaseModel):
+    username: str
+    teacher_username: str
+    request_note: Optional[str] = None
+
+
+class TeacherLinkListRequest(BaseModel):
+    username: str
+
+
+class TeacherLinkActionRequest(BaseModel):
+    username: str
+    link_id: int
+    action: str
+    response_note: Optional[str] = None
+
+
+class TeacherStudentProgressRequest(BaseModel):
+    username: str
+    student_username: str
+
+
+class TeacherLinkSummary(BaseModel):
+    id: int
+    teacher_username: Optional[str] = None
+    student_username: Optional[str] = None
+    status: str
+    request_note: Optional[str] = None
+    response_note: Optional[str] = None
+    requested_at: Optional[datetime] = None
+    responded_at: Optional[datetime] = None
+    accepted_at: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class TeacherLinkListResponse(BaseModel):
+    links: List[TeacherLinkSummary] = Field(default_factory=list)
+
+
+class TeacherStudentSummary(BaseModel):
+    username: str
+    display_name: Optional[str] = None
+    grade_level: int
+    last_login_at: Optional[datetime] = None
+    last_seen_at: Optional[datetime] = None
+    current_topic: Optional[str] = None
+    current_node: Optional[str] = None
+    grade_completion: float = 0.0
+    subject_completion: Dict[str, float] = Field(default_factory=dict)
+    total_answer_attempts: int = 0
+    correct_answer_count: int = 0
+    incorrect_answer_count: int = 0
+    average_score_percent: float = 0.0
+    correct_rate_percent: float = 0.0
+    total_learning_seconds: int = 0
+    total_login_seconds: int = 0
+    total_request_count: int = 0
+    total_chat_turns: int = 0
+    session_count: int = 0
+    active_topic_count: int = 0
+    linked_at: Optional[datetime] = None
+
+
+class StudentTopicProgressSummary(BaseModel):
+    topic_name: str
+    subject_key: Optional[str] = None
+    book_level: Optional[int] = None
+    status: str
+    mastery_score: int = 0
+    current_node: Optional[str] = None
+    completed_nodes_count: int = 0
+    answer_attempt_count: int = 0
+    correct_answer_count: int = 0
+    incorrect_answer_count: int = 0
+    average_score_percent: float = 0.0
+    total_learning_seconds: int = 0
+    session_count: int = 0
+    last_interaction_at: Optional[datetime] = None
+    last_answered_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+
+class StudentNodeProgressSummary(BaseModel):
+    topic_name: str
+    node_id: str
+    subject_key: Optional[str] = None
+    book_level: Optional[int] = None
+    status: str
+    attempt_count: int = 0
+    correct_count: int = 0
+    incorrect_count: int = 0
+    average_score_percent: float = 0.0
+    total_learning_seconds: int = 0
+    last_score_percent: Optional[int] = None
+    last_problem: Optional[str] = None
+    last_answer: Optional[str] = None
+    last_feedback: Optional[str] = None
+    first_seen_at: Optional[datetime] = None
+    last_seen_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+
+class StudentActivitySessionSummary(BaseModel):
+    started_at: Optional[datetime] = None
+    last_seen_at: Optional[datetime] = None
+    ended_at: Optional[datetime] = None
+    total_active_seconds: int = 0
+    request_count: int = 0
+    chat_turn_count: int = 0
+    last_topic_name: Optional[str] = None
+    last_node_id: Optional[str] = None
+
+
+class TeacherDashboardResponse(BaseModel):
+    pending_requests: List[TeacherLinkSummary] = Field(default_factory=list)
+    accepted_students: List[TeacherStudentSummary] = Field(default_factory=list)
+
+
+class TeacherStudentProgressResponse(BaseModel):
+    teacher_link: Optional[TeacherLinkSummary] = None
+    student: TeacherStudentSummary
+    topics: List[StudentTopicProgressSummary] = Field(default_factory=list)
+    nodes: List[StudentNodeProgressSummary] = Field(default_factory=list)
+    recent_sessions: List[StudentActivitySessionSummary] = Field(default_factory=list)
 
 
 class BillingStatusRequest(BaseModel):

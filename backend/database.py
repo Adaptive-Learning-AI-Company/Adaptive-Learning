@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, Text, ForeignKey, JSON, DateTime, Boolean, inspect, text
+from sqlalchemy import create_engine, Column, Integer, String, Text, ForeignKey, JSON, DateTime, Boolean, inspect, text, UniqueConstraint
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship, Session
 import datetime
 import re
@@ -118,6 +118,10 @@ class Player(Base):
     subscriptions = relationship("Subscription", back_populates="player")
     usage_cycles = relationship("UsageCycle", back_populates="player")
     billing_events = relationship("BillingEvent", back_populates="player")
+    teacher_links_as_student = relationship("TeacherStudentLink", foreign_keys="TeacherStudentLink.student_id", back_populates="student")
+    teacher_links_as_teacher = relationship("TeacherStudentLink", foreign_keys="TeacherStudentLink.teacher_id", back_populates="teacher")
+    activity_sessions = relationship("StudentActivitySession", back_populates="player")
+    node_progress_entries = relationship("StudentNodeProgress", back_populates="player")
 
 class TopicProgress(Base):
     __tablename__ = "topic_progress"
@@ -139,6 +143,15 @@ class TopicProgress(Base):
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
     last_interaction_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
+    answer_attempt_count = Column(Integer, default=0)
+    correct_answer_count = Column(Integer, default=0)
+    incorrect_answer_count = Column(Integer, default=0)
+    cumulative_score_percent = Column(Integer, default=0)
+    total_learning_seconds = Column(Integer, default=0)
+    session_count = Column(Integer, default=0)
+    first_answered_at = Column(DateTime, nullable=True)
+    last_answered_at = Column(DateTime, nullable=True)
+    current_node_started_at = Column(DateTime, nullable=True)
     
     player = relationship("Player", back_populates="progress")
 
@@ -161,6 +174,9 @@ class Interaction(Base):
     latency_ms = Column(Integer, nullable=True)
     billing_source = Column(String, nullable=True)
     estimated_cost_cents = Column(Integer, nullable=True)
+    event_type = Column(String, index=True, nullable=True)
+    score_percent = Column(Integer, nullable=True)
+    is_correct = Column(Boolean, nullable=True)
 
 
 class AuthSession(Base):
@@ -178,6 +194,80 @@ class AuthSession(Base):
     revoked_at = Column(DateTime, nullable=True)
 
     player = relationship("Player", back_populates="auth_sessions")
+
+
+class TeacherStudentLink(Base):
+    __tablename__ = "teacher_student_links"
+    __table_args__ = (
+        UniqueConstraint("teacher_id", "student_id", name="uq_teacher_student_pair"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    teacher_id = Column(Integer, ForeignKey("players.id"), nullable=False)
+    student_id = Column(Integer, ForeignKey("players.id"), nullable=False)
+    status = Column(String, index=True, nullable=False, default="PENDING")
+    request_note = Column(Text, nullable=True)
+    response_note = Column(Text, nullable=True)
+    requested_at = Column(DateTime, default=_utcnow)
+    responded_at = Column(DateTime, nullable=True)
+    accepted_at = Column(DateTime, nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+    teacher = relationship("Player", foreign_keys=[teacher_id], back_populates="teacher_links_as_teacher")
+    student = relationship("Player", foreign_keys=[student_id], back_populates="teacher_links_as_student")
+
+
+class StudentActivitySession(Base):
+    __tablename__ = "student_activity_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    player_id = Column(Integer, ForeignKey("players.id"), nullable=False)
+    token_jti = Column(String, unique=True, index=True, nullable=True)
+    started_at = Column(DateTime, default=_utcnow)
+    last_seen_at = Column(DateTime, nullable=True)
+    ended_at = Column(DateTime, nullable=True)
+    total_active_seconds = Column(Integer, default=0)
+    request_count = Column(Integer, default=0)
+    chat_turn_count = Column(Integer, default=0)
+    last_topic_name = Column(String, nullable=True)
+    last_node_id = Column(String, nullable=True)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+    player = relationship("Player", back_populates="activity_sessions")
+
+
+class StudentNodeProgress(Base):
+    __tablename__ = "student_node_progress"
+    __table_args__ = (
+        UniqueConstraint("player_id", "topic_name", "node_id", name="uq_student_node_progress"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    player_id = Column(Integer, ForeignKey("players.id"), nullable=False)
+    topic_name = Column(String, index=True, nullable=False)
+    node_id = Column(String, index=True, nullable=False)
+    subject_key = Column(String, index=True, nullable=True)
+    book_level = Column(Integer, nullable=True)
+    status = Column(String, index=True, default="NOT_STARTED")
+    attempt_count = Column(Integer, default=0)
+    correct_count = Column(Integer, default=0)
+    incorrect_count = Column(Integer, default=0)
+    cumulative_score_percent = Column(Integer, default=0)
+    total_learning_seconds = Column(Integer, default=0)
+    first_seen_at = Column(DateTime, nullable=True)
+    last_seen_at = Column(DateTime, nullable=True)
+    last_score_percent = Column(Integer, nullable=True)
+    last_problem = Column(Text, nullable=True)
+    last_answer = Column(Text, nullable=True)
+    last_feedback = Column(Text, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+    player = relationship("Player", back_populates="node_progress_entries")
 
 
 class SubscriptionPlan(Base):
@@ -405,6 +495,15 @@ def ensure_schema():
             "updated_at": "ALTER TABLE topic_progress ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
             "last_interaction_at": "ALTER TABLE topic_progress ADD COLUMN last_interaction_at TIMESTAMP",
             "completed_at": "ALTER TABLE topic_progress ADD COLUMN completed_at TIMESTAMP",
+            "answer_attempt_count": "ALTER TABLE topic_progress ADD COLUMN answer_attempt_count INTEGER DEFAULT 0",
+            "correct_answer_count": "ALTER TABLE topic_progress ADD COLUMN correct_answer_count INTEGER DEFAULT 0",
+            "incorrect_answer_count": "ALTER TABLE topic_progress ADD COLUMN incorrect_answer_count INTEGER DEFAULT 0",
+            "cumulative_score_percent": "ALTER TABLE topic_progress ADD COLUMN cumulative_score_percent INTEGER DEFAULT 0",
+            "total_learning_seconds": "ALTER TABLE topic_progress ADD COLUMN total_learning_seconds INTEGER DEFAULT 0",
+            "session_count": "ALTER TABLE topic_progress ADD COLUMN session_count INTEGER DEFAULT 0",
+            "first_answered_at": "ALTER TABLE topic_progress ADD COLUMN first_answered_at TIMESTAMP",
+            "last_answered_at": "ALTER TABLE topic_progress ADD COLUMN last_answered_at TIMESTAMP",
+            "current_node_started_at": "ALTER TABLE topic_progress ADD COLUMN current_node_started_at TIMESTAMP",
         },
         "interactions": {
             "session_id": "ALTER TABLE interactions ADD COLUMN session_id VARCHAR",
@@ -416,6 +515,9 @@ def ensure_schema():
             "latency_ms": "ALTER TABLE interactions ADD COLUMN latency_ms INTEGER",
             "billing_source": "ALTER TABLE interactions ADD COLUMN billing_source VARCHAR",
             "estimated_cost_cents": "ALTER TABLE interactions ADD COLUMN estimated_cost_cents INTEGER",
+            "event_type": "ALTER TABLE interactions ADD COLUMN event_type VARCHAR",
+            "score_percent": "ALTER TABLE interactions ADD COLUMN score_percent INTEGER",
+            "is_correct": "ALTER TABLE interactions ADD COLUMN is_correct BOOLEAN",
         },
     }
 
@@ -445,13 +547,28 @@ def ensure_indexes():
         "CREATE INDEX IF NOT EXISTS ix_topic_progress_subject_key ON topic_progress (subject_key)",
         "CREATE INDEX IF NOT EXISTS ix_topic_progress_last_interaction_at ON topic_progress (last_interaction_at)",
         "CREATE INDEX IF NOT EXISTS ix_topic_progress_completed_at ON topic_progress (completed_at)",
+        "CREATE INDEX IF NOT EXISTS ix_topic_progress_last_answered_at ON topic_progress (last_answered_at)",
+        "CREATE INDEX IF NOT EXISTS ix_topic_progress_current_node_started_at ON topic_progress (current_node_started_at)",
         "CREATE INDEX IF NOT EXISTS ix_interactions_session_id ON interactions (session_id)",
         "CREATE INDEX IF NOT EXISTS ix_interactions_topic_name ON interactions (topic_name)",
         "CREATE INDEX IF NOT EXISTS ix_interactions_model_name ON interactions (model_name)",
         "CREATE INDEX IF NOT EXISTS ix_interactions_billing_source ON interactions (billing_source)",
+        "CREATE INDEX IF NOT EXISTS ix_interactions_event_type ON interactions (event_type)",
+        "CREATE INDEX IF NOT EXISTS ix_interactions_is_correct ON interactions (is_correct)",
         "CREATE INDEX IF NOT EXISTS ix_auth_sessions_player_id ON auth_sessions (player_id)",
         "CREATE INDEX IF NOT EXISTS ix_auth_sessions_expires_at ON auth_sessions (expires_at)",
         "CREATE INDEX IF NOT EXISTS ix_auth_sessions_revoked_at ON auth_sessions (revoked_at)",
+        "CREATE INDEX IF NOT EXISTS ix_teacher_student_links_teacher_id ON teacher_student_links (teacher_id)",
+        "CREATE INDEX IF NOT EXISTS ix_teacher_student_links_student_id ON teacher_student_links (student_id)",
+        "CREATE INDEX IF NOT EXISTS ix_teacher_student_links_status ON teacher_student_links (status)",
+        "CREATE INDEX IF NOT EXISTS ix_student_activity_sessions_player_id ON student_activity_sessions (player_id)",
+        "CREATE INDEX IF NOT EXISTS ix_student_activity_sessions_token_jti ON student_activity_sessions (token_jti)",
+        "CREATE INDEX IF NOT EXISTS ix_student_activity_sessions_last_seen_at ON student_activity_sessions (last_seen_at)",
+        "CREATE INDEX IF NOT EXISTS ix_student_node_progress_player_id ON student_node_progress (player_id)",
+        "CREATE INDEX IF NOT EXISTS ix_student_node_progress_topic_name ON student_node_progress (topic_name)",
+        "CREATE INDEX IF NOT EXISTS ix_student_node_progress_node_id ON student_node_progress (node_id)",
+        "CREATE INDEX IF NOT EXISTS ix_student_node_progress_status ON student_node_progress (status)",
+        "CREATE INDEX IF NOT EXISTS ix_student_node_progress_last_seen_at ON student_node_progress (last_seen_at)",
         "CREATE INDEX IF NOT EXISTS ix_promo_codes_code_prefix ON promo_codes (code_prefix)",
         "CREATE INDEX IF NOT EXISTS ix_promo_codes_assigned_player_id ON promo_codes (assigned_player_id)",
         "CREATE INDEX IF NOT EXISTS ix_promo_codes_plan_code ON promo_codes (plan_code)",
@@ -533,6 +650,27 @@ def backfill_schema_defaults():
                 changed = True
             if progress.status == "COMPLETED" and not progress.completed_at:
                 progress.completed_at = progress.updated_at or progress.created_at or now
+                changed = True
+            if progress.answer_attempt_count is None:
+                progress.answer_attempt_count = 0
+                changed = True
+            if progress.correct_answer_count is None:
+                progress.correct_answer_count = 0
+                changed = True
+            if progress.incorrect_answer_count is None:
+                progress.incorrect_answer_count = 0
+                changed = True
+            if progress.cumulative_score_percent is None:
+                progress.cumulative_score_percent = 0
+                changed = True
+            if progress.total_learning_seconds is None:
+                progress.total_learning_seconds = 0
+                changed = True
+            if progress.session_count is None:
+                progress.session_count = 0
+                changed = True
+            if progress.current_node and not progress.current_node_started_at:
+                progress.current_node_started_at = progress.last_interaction_at or progress.updated_at or now
                 changed = True
 
         for interaction in db.query(Interaction).all():
@@ -656,6 +794,9 @@ def log_interaction(
     output_tokens: int | None = None,
     latency_ms: int | None = None,
     billing_source: str | None = None,
+    event_type: str | None = None,
+    score_percent: int | None = None,
+    is_correct: bool | None = None,
 ):
     db: Session = SessionLocal()
     try:
@@ -687,6 +828,9 @@ def log_interaction(
             latency_ms=latency_ms,
             billing_source=billing_source,
             estimated_cost_cents=estimated_cost_cents,
+            event_type=event_type,
+            score_percent=score_percent,
+            is_correct=is_correct,
         )
         db.add(interaction)
         db.commit()

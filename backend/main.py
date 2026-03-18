@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from contextlib import asynccontextmanager
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage
-from .models import InitRequest, ChatRequest, ChatResponse, BookSelectRequest, BookSelectResponse, InitSessionRequest, InitSessionResponse, ResumeShelfRequest, ResumeShelfResponse, PlayerStatsRequest, GraphDataRequest, GraphDataResponse, GraphNode, SetCurrentNodeRequest, RegisterRequest, LoginRequest, PasswordResetRequest, ProfileRequest, UpdateProfileRequest, ProfileResponse, BillingStatusRequest, BillingCheckoutRequest, BillingPortalRequest, BillingStatusResponse, BillingCheckoutResponse, BillingPortalResponse, RedeemAccessCodeRequest, RedeemAccessCodeResponse, CreatePromoCodeRequest, CreatePromoCodeResponse, GrantAccessRequest, RevokeAccessGrantRequest, RevokePromoCodeRequest, ListAccessGrantsRequest, ListPromoCodesRequest, AccessGrantSummary, PromoCodeSummary, AccessGrantListResponse, PromoCodeListResponse, NodeLinksRequest, NodeLinksResponse, SubmitNodeLinkRequest, SubmitNodeLinkResponse, ReviewNodeLinkRequest, PendingNodeLinksRequest, PendingNodeLinksResponse, NodeLinkSummary
+from .models import InitRequest, ChatRequest, ChatResponse, BookSelectRequest, BookSelectResponse, InitSessionRequest, InitSessionResponse, ResumeShelfRequest, ResumeShelfResponse, PlayerStatsRequest, GraphDataRequest, GraphDataResponse, GraphNode, SetCurrentNodeRequest, RegisterRequest, LoginRequest, LogoutRequest, PasswordResetRequest, ProfileRequest, UpdateProfileRequest, ProfileResponse, TeacherLinkRequest, TeacherLinkListRequest, TeacherLinkActionRequest, TeacherStudentProgressRequest, TeacherLinkSummary, TeacherLinkListResponse, TeacherDashboardResponse, TeacherStudentProgressResponse, TeacherStudentSummary, StudentTopicProgressSummary, StudentNodeProgressSummary, StudentActivitySessionSummary, BillingStatusRequest, BillingCheckoutRequest, BillingPortalRequest, BillingStatusResponse, BillingCheckoutResponse, BillingPortalResponse, RedeemAccessCodeRequest, RedeemAccessCodeResponse, CreatePromoCodeRequest, CreatePromoCodeResponse, GrantAccessRequest, RevokeAccessGrantRequest, RevokePromoCodeRequest, ListAccessGrantsRequest, ListPromoCodesRequest, AccessGrantSummary, PromoCodeSummary, AccessGrantListResponse, PromoCodeListResponse, NodeLinksRequest, NodeLinksResponse, SubmitNodeLinkRequest, SubmitNodeLinkResponse, ReviewNodeLinkRequest, PendingNodeLinksRequest, PendingNodeLinksResponse, NodeLinkSummary
 from .graph import create_graph
 from .database import init_db, get_db, Player, TopicProgress, AuthSession
 from .config import load_local_env, normalize_avatar_id, normalize_account_status
@@ -14,6 +14,8 @@ from .profile_security import encrypt_profile_secret, mask_secret
 from .billing import build_billing_status, create_checkout_session as create_billing_checkout_session, create_billing_portal_session, handle_stripe_webhook, assert_tutoring_access, increment_tutor_turn_usage
 from .access_grants import create_manual_access_grant, create_promo_code, list_access_grants, list_promo_codes, redeem_promo_code, revoke_access_grant, revoke_promo_code, serialize_access_grant, serialize_promo_code
 from .node_links import get_node_link_count_map, get_node_links_for_node, list_reviewable_node_links, review_node_link, serialize_node_link, submit_node_link
+from .student_tracking import end_activity_session, record_topic_session_start, start_activity_session, touch_activity_session, touch_current_node
+from .teacher_portal import assert_teacher_can_view_student, build_student_progress_detail, create_teacher_request, get_teacher_dashboard_payload, list_teacher_links_for_user, respond_to_teacher_request, serialize_teacher_link
 import uuid
 import json
 from fastapi.responses import HTMLResponse
@@ -210,6 +212,13 @@ def _ensure_admin_user(player: Player):
         raise HTTPException(status_code=403, detail="Administrator access required")
 
 
+def _ensure_teacher_or_admin_user(player: Player):
+    if _is_admin_user(player):
+        return
+    if (player.role or "").strip() != "Teacher":
+        raise HTTPException(status_code=403, detail="Teacher access required")
+
+
 def _normalize_user_role(role: str | None, allow_admin: bool = False) -> str:
     normalized = (role or "Student").strip().lower()
     role_map = {"student": "Student", "teacher": "Teacher", "admin": "Admin"}
@@ -243,12 +252,18 @@ def _record_auth_session(
 
 def _update_auth_session_last_seen(db: Session, current_user: Player):
     token_jti = getattr(current_user, "_token_jti", None)
-    if not token_jti:
-        return
 
-    auth_session = db.query(AuthSession).filter(AuthSession.token_jti == token_jti).first()
-    if auth_session:
-        auth_session.last_seen_at = datetime.utcnow()
+    if token_jti:
+        auth_session = db.query(AuthSession).filter(AuthSession.token_jti == token_jti).first()
+        if auth_session:
+            auth_session.last_seen_at = datetime.utcnow()
+
+    touch_activity_session(
+        db,
+        current_user,
+        token_jti=token_jti,
+        increment_request=True,
+    )
 
 
 def _extract_usage_metrics(message) -> tuple[int | None, int | None]:
@@ -728,6 +743,81 @@ async def update_profile(request: UpdateProfileRequest, current_user: Player = D
     return _build_profile_response(player)
 
 
+@app.post("/request_teacher_link", response_model=TeacherLinkSummary)
+async def request_teacher_link(request: TeacherLinkRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_current_user_matches(current_user, request.username)
+    _update_auth_session_last_seen(db, current_user)
+
+    student = _get_player_by_username(db, request.username)
+    link = create_teacher_request(
+        db,
+        student=student,
+        teacher_username=request.teacher_username,
+        request_note=_clean_optional_text(request.request_note),
+    )
+    db.commit()
+    db.refresh(link)
+    return TeacherLinkSummary(**serialize_teacher_link(link))
+
+
+@app.post("/list_teacher_links", response_model=TeacherLinkListResponse)
+async def list_teacher_links(request: TeacherLinkListRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_current_user_matches(current_user, request.username)
+    _update_auth_session_last_seen(db, current_user)
+
+    links = list_teacher_links_for_user(db, current_user)
+    return TeacherLinkListResponse(links=[TeacherLinkSummary(**serialize_teacher_link(link)) for link in links])
+
+
+@app.post("/respond_teacher_link", response_model=TeacherLinkSummary)
+async def respond_teacher_link(request: TeacherLinkActionRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_current_user_matches(current_user, request.username)
+    _update_auth_session_last_seen(db, current_user)
+    _ensure_teacher_or_admin_user(current_user)
+
+    link = respond_to_teacher_request(
+        db,
+        teacher=current_user,
+        link_id=request.link_id,
+        action=request.action,
+        response_note=_clean_optional_text(request.response_note),
+    )
+    db.commit()
+    db.refresh(link)
+    return TeacherLinkSummary(**serialize_teacher_link(link))
+
+
+@app.post("/teacher_dashboard", response_model=TeacherDashboardResponse)
+async def teacher_dashboard(request: TeacherLinkListRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_current_user_matches(current_user, request.username)
+    _update_auth_session_last_seen(db, current_user)
+    _ensure_teacher_or_admin_user(current_user)
+
+    payload = get_teacher_dashboard_payload(db, current_user)
+    return TeacherDashboardResponse(
+        pending_requests=[TeacherLinkSummary(**row) for row in payload["pending_requests"]],
+        accepted_students=[TeacherStudentSummary(**row) for row in payload["accepted_students"]],
+    )
+
+
+@app.post("/teacher_student_progress", response_model=TeacherStudentProgressResponse)
+async def teacher_student_progress(request: TeacherStudentProgressRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_current_user_matches(current_user, request.username)
+    _update_auth_session_last_seen(db, current_user)
+    _ensure_teacher_or_admin_user(current_user)
+
+    student = _get_player_by_username(db, request.student_username)
+    teacher_link = assert_teacher_can_view_student(db, current_user, student)
+    payload = build_student_progress_detail(db, student, teacher_link=teacher_link)
+    return TeacherStudentProgressResponse(
+        teacher_link=TeacherLinkSummary(**payload["teacher_link"]) if payload["teacher_link"] else None,
+        student=TeacherStudentSummary(**payload["student"]),
+        topics=[StudentTopicProgressSummary(**row) for row in payload["topics"]],
+        nodes=[StudentNodeProgressSummary(**row) for row in payload["nodes"]],
+        recent_sessions=[StudentActivitySessionSummary(**row) for row in payload["recent_sessions"]],
+    )
+
+
 @app.post("/get_node_links", response_model=NodeLinksResponse)
 async def get_node_links(request: NodeLinksRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
     _ensure_current_user_matches(current_user, request.username)
@@ -910,8 +1000,26 @@ async def login(request: LoginRequest, http_request: Request, db: Session = Depe
         expires_at=now + access_token_expires,
         http_request=http_request,
     )
+    start_activity_session(db, player, token_jti)
     db.commit()
     return {"access_token": access_token, "token_type": "bearer"}
+
+
+@app.post("/logout")
+async def logout(request: LogoutRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_current_user_matches(current_user, request.username)
+    now = datetime.utcnow()
+    token_jti = getattr(current_user, "_token_jti", None)
+
+    if token_jti:
+        auth_session = db.query(AuthSession).filter(AuthSession.token_jti == token_jti).first()
+        if auth_session and auth_session.revoked_at is None:
+            auth_session.last_seen_at = now
+            auth_session.revoked_at = now
+
+    end_activity_session(db, current_user, token_jti)
+    db.commit()
+    return {"status": "ok"}
 
 @app.post("/select_book", response_model=BookSelectResponse)
 async def select_book(request: BookSelectRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -935,6 +1043,14 @@ async def select_book(request: BookSelectRequest, current_user: Player = Depends
         db.refresh(player)
 
     assert_tutoring_access(db, player)
+    touch_activity_session(
+        db,
+        current_user,
+        token_jti=getattr(current_user, "_token_jti", None),
+        topic_name=request.topic,
+        increment_request=False,
+    )
+    record_topic_session_start(db, player, request.topic)
 
     progress = db.query(TopicProgress).filter(
         TopicProgress.player_id == player.id,
@@ -1002,6 +1118,7 @@ async def select_book(request: BookSelectRequest, current_user: Player = Depends
     config = {"configurable": {"thread_id": session_id}}
     
     initial_state = {
+        "session_id": session_id,
         "topic": request.topic,
         "grade_level": effective_grade, 
         "location": player.location,
@@ -1151,6 +1268,24 @@ async def chat(request: ChatRequest, current_user: Player = Depends(get_current_
         print(f"Error injecting nav context: {e}")
 
     increment_tutor_turn_usage(db, current_user)
+    topic_name = current_state.values.get("topic")
+    current_node_id = None
+    if topic_name:
+        current_progress = db.query(TopicProgress).filter(
+            TopicProgress.player_id == current_user.id,
+            TopicProgress.topic_name == topic_name,
+        ).first()
+        if current_progress:
+            current_node_id = current_progress.current_node
+    touch_activity_session(
+        db,
+        current_user,
+        token_jti=getattr(current_user, "_token_jti", None),
+        topic_name=topic_name,
+        node_id=current_node_id,
+        increment_request=False,
+        increment_chat_turn=True,
+    )
     db.commit()
 
     return ChatResponse(
@@ -1490,33 +1625,15 @@ async def set_current_node(request: SetCurrentNodeRequest, current_user: Player 
     player = db.query(Player).filter(Player.username == request.username).first()
     if not player:
         raise HTTPException(status_code=404, detail="Player not found")
-        
-    prog = db.query(TopicProgress).filter(
-        TopicProgress.player_id == player.id,
-        TopicProgress.topic_name == request.topic
-    ).first()
-    
-    
-    if not prog:
-        now = datetime.utcnow()
-        prog = TopicProgress(
-            player_id=player.id,
-            topic_name=request.topic,
-            mastery_score=0,
-            created_at=now,
-            updated_at=now,
-            last_interaction_at=now,
-        )
-        _apply_topic_progress_metadata(prog, request.topic)
-        db.add(prog)
-
-    prog.current_node = request.node_id
-    prog.last_interaction_at = datetime.utcnow()
-    prog.updated_at = datetime.utcnow()
-    _apply_topic_progress_metadata(prog, request.topic)
-    if prog.status == "NOT_STARTED":
-        prog.status = "IN_PROGRESS"
-        
+    touch_current_node(db, player, request.topic, request.node_id)
+    touch_activity_session(
+        db,
+        current_user,
+        token_jti=getattr(current_user, "_token_jti", None),
+        topic_name=request.topic,
+        node_id=request.node_id,
+        increment_request=False,
+    )
     db.commit()
     return {"status": "ok", "current_node": request.node_id}
 

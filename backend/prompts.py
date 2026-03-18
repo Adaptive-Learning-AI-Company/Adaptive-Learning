@@ -35,14 +35,20 @@ Problem: {last_problem}
 Student Answer: {last_answer}
 Determine if the answer is correct.
 
-**IMPORTANT**:
-- If the answer is correct, you MUST include the token `[CORRECT]` anywhere in your response.
-- If the answer is incorrect, you MUST include the token `[INCORRECT]`.
+Return ONLY a JSON object with this exact shape:
+{{
+  "result": "CORRECT" | "INCORRECT",
+  "score_percent": 0-100,
+  "feedback": "A short student-facing response that begins with [CORRECT] or [INCORRECT]."
+}}
 
-**Motivation**: You are also a Motivator.
-- If correct: Praise the student enthusiastically! (e.g. "Outstanding!", "You're crushing it!")
-- If incorrect: Be encouraging. Use "Growth Mindset" language. (e.g. "Not quite, but you're close!", "Mistakes are proof you are trying!")
-Explain the error gently and give a hint.
+Rules:
+- `result` must be CORRECT or INCORRECT.
+- `score_percent` must be 100 only when the answer is fully correct.
+- When partially correct, use an intermediate score such as 25, 50, or 75.
+- `feedback` must be encouraging and specific.
+- If correct: praise the student enthusiastically.
+- If incorrect: explain the error gently and give a hint.
 """
 
 SUPERVISOR_PROMPT = """You are the Learning Supervisor.

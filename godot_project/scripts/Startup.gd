@@ -2,7 +2,7 @@ extends Control
 
 # Main UI
 @onready var create_user_btn = $Panel/TopRightContainer/CreateUserButton
-@onready var user_option = $Panel/MainContainer/UserOption
+@onready var username_input = $Panel/MainContainer/UsernameInput
 @onready var manual_check = $Panel/MainContainer/ManualCheck
 @onready var advanced_btn = $Panel/MainContainer/AdvancedButton
 @onready var start_button = $Panel/MainContainer/StartButton
@@ -17,6 +17,9 @@ var role_option = null # Initialized in _ready (Dynamic)
 @onready var save_check = $AdvancedPopup/VBox/SaveProfileCheck
 @onready var close_advanced_btn = $AdvancedPopup/VBox/CloseAdvanced
 var forgot_pcode_popup: Window = null # Dynamic window for reset
+var manual_help_popup: PanelContainer = null
+
+const MANUAL_DEFAULTS_HELP := "When enabled, Adaptive Tutor stops auto-adjusting the lesson from your saved profile. Use Advanced Settings to force a specific grade level, location, learning style, or role for this session."
 
 func _ready():
 	# Setup Dropdowns (Advanced)
@@ -71,7 +74,7 @@ func _ready():
 	
 	# Re-order Elements
 	var container = $Panel/MainContainer
-	var user_opt = $Panel/MainContainer/UserOption
+	var user_opt = $Panel/MainContainer/UsernameInput
 	var pwd_input = $Panel/MainContainer/PasswordInput
 	var acc_input = $Panel/MainContainer/AccessCodeInput
 	var start_btn = $Panel/MainContainer/StartButton
@@ -101,73 +104,11 @@ func _ready():
 	advanced_btn.pressed.connect(_on_advanced_pressed)
 	close_advanced_btn.pressed.connect(_on_close_advanced_pressed)
 	start_button.pressed.connect(_on_start_pressed)
-	user_option.item_selected.connect(_on_user_selected)
-	
-	# Load Users
-	# Load Users immediately
-	fetch_users()
+	if username_input:
+		username_input.text_submitted.connect(func(_text): _on_start_pressed())
 
-
-func fetch_users():
-	var nm = preload("res://scripts/NetworkManager.gd").new()
-	add_child(nm)
-	nm.get_users(func(users):
-		# Handle Connection Error / Fallback
-		if users == null:
-			if nm.base_url == nm.local_url:
-				print("Startup: Local backend unreachable. Falling back to PROD...")
-				print("Startup: Current PROD URL is: " + nm.prod_url)
-				status_label.text = "Local offline. Switching to Render..."
-				
-				# SWITCH TO PROD
-				nm.base_url = nm.prod_url
-				
-				# Update Global Access logic
-				NetworkManager.base_url = NetworkManager.prod_url
-				
-				# PRE-CHECK HEALTH
-				nm.check_health(func(is_alive):
-					if is_alive:
-						print("Startup: Prod Backend is ALIVE.")
-						# RETRY users fetch
-						nm.get_users(func(retry_users):
-							if retry_users == null:
-								status_label.text = "Connected, but User Fetch Failed."
-								user_option.clear()
-								user_option.add_item("Offline", 0)
-								user_option.set_item_disabled(0, true)
-							else:
-								_populate_users(retry_users)
-						)
-					else:
-						print("Startup: Prod Backend Unreachable (503/404?).")
-						status_label.text = "Connection Failed (All Servers Down)."
-						user_option.clear()
-						user_option.add_item("Offline", 0)
-						user_option.set_item_disabled(0, true)
-				)
-				return
-			else:
-				status_label.text = "Connection Failed."
-				user_option.clear()
-				user_option.add_item("Offline", 0)
-				user_option.set_item_disabled(0, true)
-				return
-
-		_populate_users(users)
-		nm.queue_free()
-	)
-
-func _populate_users(users):
-	user_option.clear()
-	user_option.add_item("Select User...", 0)
-	user_option.set_item_disabled(0, true)
-	
-	for u in users:
-		user_option.add_item(u)
-		
-	# Try to load previous user prefs
-	load_preferences(users)
+	_setup_manual_help_popup()
+	_restore_preferences()
 
 func _on_create_user_pressed():
 	get_tree().change_scene_to_file("res://scenes/Registration.tscn")
@@ -178,17 +119,13 @@ func _on_advanced_pressed():
 func _on_close_advanced_pressed():
 	advanced_popup.visible = false
 
-func _on_user_selected(index):
-	# Auto-load preferences for this user if we had them saved locally?
-	# For now, just simplistic logic.
-	pass
-
 func _on_start_pressed():
-	var user_idx = user_option.selected
-	var username = user_option.get_item_text(user_idx)
-	if username == "Select User...":
-		status_label.text = "Please select a user."
+	var username = username_input.text.strip_edges()
+	if username == "":
+		status_label.text = "Please enter a username."
 		return
+
+	save_preferences(username, grade_option.get_selected_id())
 	
 	# Verify Password
 	var pwd_input = $Panel/MainContainer/PasswordInput
@@ -416,16 +353,13 @@ func _initialize_session(username):
 func _on_session_ready(data):
 	pass
 
-func load_preferences(user_list):
+func _restore_preferences():
 	var config = ConfigFile.new()
 	var err = config.load("user://settings.cfg")
 	if err == OK:
 		var saved_name = config.get_value("user", "username", "")
-		# Try select user
-		for i in range(user_option.item_count):
-			if user_option.get_item_text(i) == saved_name:
-				user_option.selected = i
-				break
+		if username_input:
+			username_input.text = str(saved_name)
 		
 		# Load advanced settings?
 		var s_grade = config.get_value("user", "grade", 10)
@@ -440,3 +374,82 @@ func save_preferences(name, grade):
 	config.set_value("user", "username", name)
 	config.set_value("user", "grade", grade)
 	config.save("user://settings.cfg")
+
+
+func _setup_manual_help_popup():
+	if manual_check == null:
+		return
+
+	manual_check.tooltip_text = ""
+	manual_check.mouse_entered.connect(_show_manual_help)
+	manual_check.mouse_exited.connect(_hide_manual_help)
+	manual_check.focus_entered.connect(func(): _show_manual_help(false))
+	manual_check.focus_exited.connect(func(): _hide_manual_help())
+	manual_check.gui_input.connect(_on_manual_check_gui_input)
+
+	manual_help_popup = PanelContainer.new()
+	manual_help_popup.visible = false
+	manual_help_popup.z_index = 50
+	manual_help_popup.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var panel_style = StyleBoxFlat.new()
+	panel_style.bg_color = Color(0.08, 0.1, 0.14, 0.96)
+	panel_style.border_color = Color(0.58, 0.86, 1.0, 0.95)
+	panel_style.border_width_left = 2
+	panel_style.border_width_top = 2
+	panel_style.border_width_right = 2
+	panel_style.border_width_bottom = 2
+	panel_style.corner_radius_top_left = 12
+	panel_style.corner_radius_top_right = 12
+	panel_style.corner_radius_bottom_right = 12
+	panel_style.corner_radius_bottom_left = 12
+	manual_help_popup.add_theme_stylebox_override("panel", panel_style)
+	manual_help_popup.custom_minimum_size = Vector2(420, 110)
+	add_child(manual_help_popup)
+
+	var help_margin = MarginContainer.new()
+	help_margin.set_anchors_preset(Control.PRESET_FULL_RECT)
+	help_margin.add_theme_constant_override("margin_left", 14)
+	help_margin.add_theme_constant_override("margin_top", 12)
+	help_margin.add_theme_constant_override("margin_right", 14)
+	help_margin.add_theme_constant_override("margin_bottom", 12)
+	manual_help_popup.add_child(help_margin)
+
+	var help_label = Label.new()
+	help_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	help_label.text = MANUAL_DEFAULTS_HELP
+	help_label.custom_minimum_size = Vector2(392, 0)
+	help_margin.add_child(help_label)
+
+
+func _show_manual_help(_unused = null):
+	if manual_help_popup == null or manual_check == null:
+		return
+
+	var checkbox_rect = manual_check.get_global_rect()
+	var viewport_rect = get_viewport_rect()
+	var popup_size = manual_help_popup.custom_minimum_size
+	var desired_position = Vector2(
+		checkbox_rect.position.x,
+		checkbox_rect.position.y + checkbox_rect.size.y + 10.0
+	)
+	desired_position.x = clamp(desired_position.x, 16.0, max(16.0, viewport_rect.size.x - popup_size.x - 16.0))
+	desired_position.y = clamp(desired_position.y, 16.0, max(16.0, viewport_rect.size.y - popup_size.y - 16.0))
+	manual_help_popup.position = desired_position
+	manual_help_popup.show()
+
+func _hide_manual_help():
+	if manual_help_popup:
+		manual_help_popup.hide()
+
+
+func _on_manual_check_gui_input(event):
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if event.pressed:
+			_show_manual_help()
+		else:
+			_hide_manual_help()
+	elif event is InputEventScreenTouch:
+		if event.pressed:
+			_show_manual_help()
+		else:
+			_hide_manual_help()

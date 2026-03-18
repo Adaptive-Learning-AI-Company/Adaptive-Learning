@@ -2,6 +2,9 @@ extends CharacterBody3D
 
 const SPEED = 5.0
 const JUMP_VELOCITY = 4.5
+const CAMERA_COLLISION_MARGIN := 0.22
+const CAMERA_PROBE_RIGHT := 0.34
+const CAMERA_PROBE_UP := 0.22
 const AVATAR_SCENES := {
 	"schoolgirl": {
 		"path": "res://assets/models/Schoolgirl/schoolgirl.glb",
@@ -35,6 +38,7 @@ var avatar_part_rotations := {}
 var avatar_part_positions := {}
 var avatar_base_position := Vector3.ZERO
 var avatar_base_rotation := Vector3.ZERO
+var camera_home_position := Vector3.ZERO
 
 var external_move_input = Vector2.ZERO
 var external_look_input = Vector2.ZERO
@@ -42,6 +46,7 @@ var external_look_input = Vector2.ZERO
 
 func _ready():
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	camera_home_position = camera.position
 	_load_profile_avatar()
 	_create_crosshair()
 
@@ -72,6 +77,7 @@ func _physics_process(delta):
 		pivot.rotation.x = clamp(pivot.rotation.x, -1.2, 0.5)
 
 	move_and_slide()
+	_update_camera_collision()
 	_update_avatar_animation(delta)
 	update_highlight()
 
@@ -160,6 +166,54 @@ func _create_crosshair():
 	canvas.add_child(crosshair)
 
 
+func _update_camera_collision():
+	if pivot == null or camera == null:
+		return
+
+	var desired_local_position = camera_home_position
+	var from = pivot.global_position
+	var to = pivot.to_global(desired_local_position)
+	var direction = to - from
+	var desired_distance = direction.length()
+	if desired_distance <= 0.001:
+		camera.position = desired_local_position
+		return
+
+	var direction_normalized = direction / desired_distance
+	var right = pivot.global_transform.basis.x.normalized()
+	var up = pivot.global_transform.basis.y.normalized()
+	var query = PhysicsRayQueryParameters3D.create(from, to)
+	query.exclude = [self.get_rid()]
+	query.collide_with_bodies = true
+	query.collide_with_areas = false
+
+	var safe_ratio = 1.0
+	var probe_offsets: Array[Vector3] = [
+		Vector3.ZERO,
+		right * CAMERA_PROBE_RIGHT,
+		-right * CAMERA_PROBE_RIGHT,
+		up * CAMERA_PROBE_UP,
+		-up * CAMERA_PROBE_UP,
+		(right + up).normalized() * CAMERA_PROBE_RIGHT,
+		(right - up).normalized() * CAMERA_PROBE_RIGHT,
+		(-right + up).normalized() * CAMERA_PROBE_RIGHT,
+		(-right - up).normalized() * CAMERA_PROBE_RIGHT,
+	]
+
+	for offset in probe_offsets:
+		var probe_query = PhysicsRayQueryParameters3D.create(from + (offset * 0.1), to + offset)
+		probe_query.exclude = [self.get_rid()]
+		probe_query.collide_with_bodies = true
+		probe_query.collide_with_areas = false
+		var result = get_world_3d().direct_space_state.intersect_ray(probe_query)
+		if result and result.has("position"):
+			var hit_distance = max(0.0, (Vector3(result["position"]) - from).dot(direction_normalized) - CAMERA_COLLISION_MARGIN)
+			safe_ratio = min(safe_ratio, hit_distance / desired_distance)
+
+	safe_ratio = clamp(safe_ratio, 0.12, 1.0)
+	camera.position = desired_local_position * safe_ratio
+
+
 func _load_profile_avatar():
 	var gm = get_node_or_null("/root/GameManager")
 	var requested_avatar = "schoolgirl"
@@ -189,12 +243,53 @@ func _mount_avatar(avatar_id: String):
 	avatar_instance.rotation_degrees = config["rotation_degrees"]
 	avatar_instance.scale = config["scale"]
 	avatar_root.add_child(avatar_instance)
+	_fit_avatar_to_floor()
 
 	avatar_base_position = avatar_instance.position
 	avatar_base_rotation = avatar_instance.rotation
 
 	_cache_avatar_parts()
 	_try_play_model_animation()
+
+
+func _fit_avatar_to_floor():
+	if avatar_instance == null or not is_instance_valid(avatar_instance):
+		return
+
+	var min_y = _find_avatar_lowest_point(avatar_instance, INF)
+	if min_y == INF:
+		return
+
+	avatar_instance.position.y += -min_y + 0.02
+
+
+func _find_avatar_lowest_point(node: Node, current_min_y: float) -> float:
+	if node is MeshInstance3D:
+		var mesh_instance := node as MeshInstance3D
+		if mesh_instance.mesh:
+			for corner in _aabb_corners(mesh_instance.mesh.get_aabb()):
+				var corner_in_avatar = avatar_instance.to_local(mesh_instance.to_global(corner))
+				current_min_y = min(current_min_y, corner_in_avatar.y)
+
+	for child in node.get_children():
+		current_min_y = _find_avatar_lowest_point(child, current_min_y)
+
+	return current_min_y
+
+
+func _aabb_corners(aabb: AABB) -> Array[Vector3]:
+	var position = aabb.position
+	var size = aabb.size
+	return [
+		position,
+		position + Vector3(size.x, 0.0, 0.0),
+		position + Vector3(0.0, size.y, 0.0),
+		position + Vector3(0.0, 0.0, size.z),
+		position + Vector3(size.x, size.y, 0.0),
+		position + Vector3(size.x, 0.0, size.z),
+		position + Vector3(0.0, size.y, size.z),
+		position + size,
+	]
 
 
 func _cache_avatar_parts():
