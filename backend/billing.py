@@ -169,7 +169,7 @@ def get_plan_definition(plan_code: str | None) -> PlanDefinition | None:
 
 
 def billing_is_enforced() -> bool:
-    return _env_bool("BILLING_ENFORCED", False)
+    return not _env_bool("ALLOW_OPEN_TUTORING_ACCESS", False)
 
 
 def billing_is_configured() -> bool:
@@ -336,7 +336,7 @@ def get_billing_state(db, player) -> dict:
             reason = "Billing is not configured on the server."
         elif not _subscription_has_access(subscription):
             allowed = False
-            reason = "An active subscription is required to start tutoring."
+            reason = "Tutoring access requires an active subscription or access code."
         elif not plan:
             allowed = False
             reason = "Your subscription plan could not be resolved."

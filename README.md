@@ -53,6 +53,7 @@ For the full rollout checklist for this upgrade, see [UPGRADE_INSTALLATION_GUIDE
    STRIPE_WEBHOOK_SECRET="..."
    ```
    Public/runtime values like `PUBLIC_BASE_URL`, `CORS_ALLOWED_ORIGINS`, `EMAIL_HOST`, `EMAIL_USER`, `ADMIN_USERNAMES`, and Stripe price IDs can live in [`.env.public`](/home/jglossner/Adaptive-Learning/.env.public).
+   Tutoring access is locked down by default. Only users with an active subscription or access code can reach the agents unless you explicitly set `ALLOW_OPEN_TUTORING_ACCESS=true` for a temporary open-access environment.
    On Render, copy values from `.env.public` plus your private `.env` or `.env.secret`, or mount the secret values at `/etc/secrets/.env`, and also provide `DATABASE_URL` from your managed Postgres instance.
    Godot exports now derive their production backend URL from `PUBLIC_BASE_URL`; no manual `Secrets.gd` file is required.
 4. Run the server:

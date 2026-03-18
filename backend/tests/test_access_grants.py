@@ -42,7 +42,7 @@ def _add_player(db, username: str, role: str = "Student") -> Player:
 
 
 def test_assigned_promo_code_redeems_only_for_matching_user(monkeypatch):
-    monkeypatch.setenv("BILLING_ENFORCED", "true")
+    monkeypatch.delenv("ALLOW_OPEN_TUTORING_ACCESS", raising=False)
     db = _make_session()
     try:
         owner = _add_player(db, "owner")
@@ -76,7 +76,7 @@ def test_assigned_promo_code_redeems_only_for_matching_user(monkeypatch):
 
 
 def test_revoked_promo_code_stops_access_even_if_grant_row_remains(monkeypatch):
-    monkeypatch.setenv("BILLING_ENFORCED", "true")
+    monkeypatch.delenv("ALLOW_OPEN_TUTORING_ACCESS", raising=False)
     db = _make_session()
     try:
         player = _add_player(db, "student")
@@ -106,7 +106,7 @@ def test_revoked_promo_code_stops_access_even_if_grant_row_remains(monkeypatch):
 
 
 def test_manual_access_grant_can_be_non_expiring_and_revoked(monkeypatch):
-    monkeypatch.setenv("BILLING_ENFORCED", "true")
+    monkeypatch.delenv("ALLOW_OPEN_TUTORING_ACCESS", raising=False)
     db = _make_session()
     try:
         admin = _add_player(db, "admin", role="Admin")

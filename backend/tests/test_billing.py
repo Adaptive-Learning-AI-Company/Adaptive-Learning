@@ -1,4 +1,4 @@
-from backend.billing import PLAN_BYOK_MONTHLY, PLAN_HOSTED_MONTHLY, estimate_model_cost_cents, get_plan_definition
+from backend.billing import PLAN_BYOK_MONTHLY, PLAN_HOSTED_MONTHLY, billing_is_enforced, estimate_model_cost_cents, get_plan_definition
 
 
 def test_default_plan_catalog_contains_both_subscription_types():
@@ -20,3 +20,11 @@ def test_estimate_model_cost_cents_uses_default_gpt5_mini_prices(monkeypatch):
     estimated = estimate_model_cost_cents("gpt-5-mini", 1_000_000, 500_000)
 
     assert estimated == 125
+
+
+def test_open_tutoring_access_flag_controls_entitlement_bypass(monkeypatch):
+    monkeypatch.delenv("ALLOW_OPEN_TUTORING_ACCESS", raising=False)
+    assert billing_is_enforced() is True
+
+    monkeypatch.setenv("ALLOW_OPEN_TUTORING_ACCESS", "true")
+    assert billing_is_enforced() is False

@@ -19,9 +19,9 @@ This guide covers the full rollout of the current upgrade set:
    - `PUBLIC_BASE_URL`
    - Stripe success/cancel/portal return URLs
    - generated Godot export config
-4. Decide whether Stripe billing should be enforced immediately.
-   - Recommended first deploy: `BILLING_ENFORCED=false`
-   - After Stripe is fully configured and tested: `BILLING_ENFORCED=true`
+4. Decide whether you want any temporary open access at all.
+   - Recommended production setting: `ALLOW_OPEN_TUTORING_ACCESS=false`
+   - Only set `ALLOW_OPEN_TUTORING_ACCESS=true` for a temporary dev/demo environment where users should be able to reach the agents without a subscription or access code.
 
 ## 2. Local Secret Files
 
@@ -73,8 +73,8 @@ EMAIL_USER=admin@adaptivetutor.ai
 PUBLIC_BASE_URL=https://your-render-backend.onrender.com
 CORS_ALLOWED_ORIGINS=https://adaptivetutor.ai,https://www.adaptivetutor.ai
 
-BILLING_ENFORCED=false
 BILLING_ALLOW_PAST_DUE_ACCESS=false
+ALLOW_OPEN_TUTORING_ACCESS=false
 ADMIN_USERNAMES=your_admin_username
 
 STRIPE_PRICE_ID_BYOK_MONTHLY=price_...
@@ -89,6 +89,7 @@ Notes:
 - `billing_config.json` provides default plans and caps even if env vars are missing.
 - Env vars can still override those defaults if you want to tune plans later without editing JSON.
 - Hosted tutoring currently defaults to `gpt-5-mini`.
+- With `ALLOW_OPEN_TUTORING_ACCESS=false`, users must have either an active subscription or an active access code/grant before the tutoring agents can be used.
 
 ## 4. Stripe Dashboard Setup
 

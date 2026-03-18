@@ -64,6 +64,7 @@ var joystick_right: VirtualJoystick
 var hud_role: Label
 var profile_window: Window
 var admin_window: Window
+var sidebar_access_label: Label
 var profile_email_input: LineEdit
 var profile_avatar_option: OptionButton
 var profile_openai_key_input: LineEdit
@@ -121,6 +122,9 @@ var selection_clock := 0.0
 var profile_grade_level := 1
 var profile_role := "Student"
 var profile_is_admin := false
+var tutoring_access_loaded := false
+var tutoring_access_allowed := false
+var tutoring_access_reason := "Checking tutoring access..."
 
 
 func _extract_explicit_admin_flag(stats: Dictionary) -> bool:
@@ -152,6 +156,48 @@ func _ready():
 	player.position = Vector3(0, 0.5, 0)
 	player.interaction_requested.connect(_on_interaction)
 	add_child(player)
+
+
+func _set_sidebar_access_message(message: String, color: Color):
+	if sidebar_access_label:
+		sidebar_access_label.text = message
+		sidebar_access_label.modulate = color
+
+
+func _set_tutoring_access_loading():
+	tutoring_access_loaded = false
+	tutoring_access_allowed = false
+	tutoring_access_reason = "Checking tutoring access..."
+	_set_sidebar_access_message("Checking tutoring access...", Color(0.82, 0.84, 0.9, 0.95))
+
+
+func _set_tutoring_access_state(allowed: bool, message: String):
+	tutoring_access_loaded = true
+	tutoring_access_allowed = allowed
+	var display_message = message.strip_edges()
+	if display_message == "":
+		display_message = "Tutoring access requires an active subscription or access code."
+	tutoring_access_reason = display_message
+	if allowed:
+		_set_sidebar_access_message(display_message, Color(0.74, 0.95, 0.8, 1.0))
+	else:
+		_set_sidebar_access_message(display_message + " Open Profile Settings to subscribe or redeem a code.", Color(1.0, 0.78, 0.72, 1.0))
+
+
+func _ensure_tutoring_access() -> bool:
+	if not tutoring_access_loaded:
+		_set_sidebar_access_message("Checking tutoring access. Please wait a moment and try again.", Color(1.0, 0.84, 0.62, 1.0))
+		if sidebar_panel:
+			sidebar_panel.visible = true
+		return false
+
+	if tutoring_access_allowed:
+		return true
+
+	_set_tutoring_access_state(false, tutoring_access_reason)
+	if sidebar_panel:
+		sidebar_panel.visible = true
+	return false
 
 func _process(delta):
 	selection_clock += delta
@@ -324,6 +370,12 @@ func setup_ui():
 		btn.add_child(p)
 		sidebar_subject_progress_bars[sub] = p
 
+	sidebar_access_label = Label.new()
+	sidebar_access_label.autowrap_mode = TextServer.AUTOWRAP_WORD
+	sidebar_access_label.text = "Checking tutoring access..."
+	sidebar_access_label.modulate = Color(0.82, 0.84, 0.9, 0.95)
+	content_vbox.add_child(sidebar_access_label)
+
 	# Spacer
 	var spacer = Control.new()
 	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -362,6 +414,8 @@ func setup_ui():
 
 	# Fetch Stats
 	fetch_stats()
+	_set_tutoring_access_loading()
+	_fetch_billing_status()
 
 	# Start Hidden on Mobile?
 	# sidebar_panel.visible = false
@@ -441,6 +495,7 @@ func _setup_profile_window():
 	profile_window.unresizable = false
 	profile_window.close_requested.connect(func(): profile_window.hide())
 	ui_canvas.add_child(profile_window)
+	profile_window.hide()
 
 	var root = VBoxContainer.new()
 	root.name = "ProfileVBox"
@@ -605,6 +660,7 @@ func _setup_admin_window():
 	admin_window.unresizable = false
 	admin_window.close_requested.connect(func(): admin_window.hide())
 	ui_canvas.add_child(admin_window)
+	admin_window.hide()
 
 	var scroll = ScrollContainer.new()
 	scroll.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -855,6 +911,7 @@ func _on_profile_loaded(_code, response):
 func _fetch_billing_status():
 	var data = {"username": GameManager.player_username}
 	NetworkManager.post_request("/get_billing_status", data, _on_billing_loaded, func(code, err):
+		_set_tutoring_access_state(false, "Unable to verify tutoring access right now.")
 		if billing_access_label:
 			billing_access_label.text = "Billing status unavailable."
 	)
@@ -944,8 +1001,11 @@ func _on_billing_loaded(_code, response):
 			if grant_expires_at != null and str(grant_expires_at) != "":
 				access_message += " Expires: " + str(grant_expires_at) + "."
 			billing_access_label.text = access_message
+			_set_tutoring_access_state(true, access_message)
 		else:
-			billing_access_label.text = str(response.get("access_reason", "Subscription required."))
+			var blocked_message = str(response.get("access_reason", "Tutoring access requires an active subscription or access code."))
+			billing_access_label.text = blocked_message
+			_set_tutoring_access_state(false, blocked_message)
 
 	if billing_hosted_button:
 		billing_hosted_button.disabled = not bool(response.get("checkout_available", false)) or active_subscription
@@ -2299,15 +2359,21 @@ func _on_interaction(collider):
 	print("Library received interaction with: ", collider)
 	if collider.has_meta("topic"):
 		# Book selection should honor the exact textbook clicked.
+		if not _ensure_tutoring_access():
+			return
 		goto_classroom(str(collider.get_meta("topic")))
 	elif collider.has_meta("shelf_category"):
 		var cat = collider.get_meta("shelf_category")
 		print("Shelf selected: " + cat)
 		resume_shelf(cat)
 	elif collider.get_parent() and collider.get_parent().has_meta("topic"):
+		if not _ensure_tutoring_access():
+			return
 		goto_classroom(str(collider.get_parent().get_meta("topic")))
 
 func resume_shelf(category):
+	if not _ensure_tutoring_access():
+		return
 	var game_manager = get_node("/root/GameManager")
 	var data = {
 		"username": game_manager.player_username,
@@ -2321,8 +2387,11 @@ func _on_resume_success(_code, response):
 
 func _on_resume_fail(_code, err):
 	print("Error resuming shelf: " + err)
+	_set_tutoring_access_state(false, err if err != "" else "Tutoring access requires an active subscription or access code.")
 
 func goto_classroom(topic):
+	if not _ensure_tutoring_access():
+		return
 	print("Switching to classroom for topic: ", topic)
 	var game_manager = get_node("/root/GameManager")
 	if game_manager:
