@@ -8,7 +8,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage
 from .models import InitRequest, ChatRequest, ChatResponse, BookSelectRequest, BookSelectResponse, InitSessionRequest, InitSessionResponse, ResumeShelfRequest, ResumeShelfResponse, PlayerStatsRequest, GraphDataRequest, GraphDataResponse, GraphNode, SetCurrentNodeRequest, RegisterRequest, LoginRequest, LogoutRequest, PasswordResetRequest, ProfileRequest, UpdateProfileRequest, ProfileResponse, TeacherLinkRequest, TeacherLinkListRequest, TeacherLinkActionRequest, TeacherLinkRevokeRequest, TeacherStudentProgressRequest, TeacherLinkSummary, TeacherLinkListResponse, TeacherDashboardResponse, TeacherStudentProgressResponse, TeacherStudentSummary, StudentTopicProgressSummary, StudentNodeProgressSummary, StudentActivitySessionSummary, BillingStatusRequest, BillingCheckoutRequest, BillingPortalRequest, BillingStatusResponse, BillingCheckoutResponse, BillingPortalResponse, RedeemAccessCodeRequest, RedeemAccessCodeResponse, CreatePromoCodeRequest, CreatePromoCodeResponse, GrantAccessRequest, RevokeAccessGrantRequest, RevokePromoCodeRequest, ListAccessGrantsRequest, ListPromoCodesRequest, AccessGrantSummary, PromoCodeSummary, AccessGrantListResponse, PromoCodeListResponse, NodeLinksRequest, NodeLinksResponse, SubmitNodeLinkRequest, SubmitNodeLinkResponse, ReviewNodeLinkRequest, PendingNodeLinksRequest, PendingNodeLinksResponse, NodeLinkSummary
 from .graph import create_graph
-from .database import init_db, get_db, Player, TopicProgress, AuthSession
+from .database import init_db, get_db, Player, TopicProgress, AuthSession, apply_player_defaults
 from .config import load_local_env, normalize_avatar_id, normalize_account_status
 from .profile_security import encrypt_profile_secret, mask_secret
 from .billing import build_billing_status, create_checkout_session as create_billing_checkout_session, create_billing_portal_session, handle_stripe_webhook, assert_tutoring_access, increment_tutor_turn_usage
@@ -176,6 +176,15 @@ def _get_player_by_username(db: Session, username: str) -> Player:
     if not player:
         raise HTTPException(status_code=404, detail="User not found")
     return player
+
+
+def _ensure_player_runtime_defaults(db: Session, player: Player) -> None:
+    if player is None:
+        return
+    if apply_player_defaults(player):
+        player.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(player)
 
 
 def _resolve_expiration(expires_at: datetime | None, duration_days: int | None) -> datetime | None:
@@ -443,6 +452,7 @@ async def get_player_stats(request: PlayerStatsRequest, current_user: Player = D
     player = db.query(Player).filter(Player.username == request.username).first()
     if not player:
         return {"stats": {}}
+    _ensure_player_runtime_defaults(db, player)
 
     stats = {}
     subjects = ["Math", "Science", "Social_Studies", "ELA"]
@@ -528,6 +538,7 @@ async def get_profile(request: ProfileRequest, current_user: Player = Depends(ge
     player = db.query(Player).filter(Player.username == request.username).first()
     if not player:
         raise HTTPException(status_code=404, detail="User not found")
+    _ensure_player_runtime_defaults(db, player)
     return _build_profile_response(player)
 
 
@@ -1065,6 +1076,8 @@ async def select_book(request: BookSelectRequest, current_user: Player = Depends
         db.add(player)
         db.commit()
         db.refresh(player)
+    else:
+        _ensure_player_runtime_defaults(db, player)
 
     assert_tutoring_access(db, player)
     touch_activity_session(

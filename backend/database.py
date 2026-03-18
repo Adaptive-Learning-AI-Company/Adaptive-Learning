@@ -68,6 +68,49 @@ def _extract_book_level(topic_name: str | None) -> int | None:
     except ValueError:
         return None
 
+
+def apply_player_defaults(player: "Player") -> bool:
+    changed = False
+
+    if player.xp is None:
+        player.xp = 0
+        changed = True
+    if player.level is None:
+        player.level = 1
+        changed = True
+    if not player.location:
+        player.location = "New Hampshire"
+        changed = True
+    if player.grade_level is None:
+        player.grade_level = 10
+        changed = True
+    if not player.learning_style:
+        player.learning_style = "Visual"
+        changed = True
+    if not player.sex:
+        player.sex = "Not Specified"
+        changed = True
+    if not player.role:
+        player.role = "Student"
+        changed = True
+    if not player.display_name:
+        player.display_name = player.username
+        changed = True
+    if not player.account_status:
+        player.account_status = "active"
+        changed = True
+    if not player.avatar_id:
+        player.avatar_id = DEFAULT_AVATAR_ID
+        changed = True
+    if not player.curriculum_region and player.location:
+        player.curriculum_region = player.location
+        changed = True
+    if player.subscription_status_cached is None:
+        player.subscription_status_cached = "inactive"
+        changed = True
+
+    return changed
+
 class Player(Base):
     __tablename__ = "players"
     
@@ -599,14 +642,7 @@ def backfill_schema_defaults():
     changed = False
     try:
         for player in db.query(Player).all():
-            if not player.display_name:
-                player.display_name = player.username
-                changed = True
-            if not player.account_status:
-                player.account_status = "active"
-                changed = True
-            if not player.curriculum_region:
-                player.curriculum_region = player.location
+            if apply_player_defaults(player):
                 changed = True
             if not player.created_at:
                 player.created_at = now
@@ -619,9 +655,6 @@ def backfill_schema_defaults():
                 changed = True
             if player.openai_api_key_encrypted and not player.openai_api_key_updated_at:
                 player.openai_api_key_updated_at = player.updated_at or player.created_at or now
-                changed = True
-            if player.subscription_status_cached is None:
-                player.subscription_status_cached = "inactive"
                 changed = True
 
         for progress in db.query(TopicProgress).all():
