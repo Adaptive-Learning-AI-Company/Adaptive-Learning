@@ -157,6 +157,12 @@ class TeacherLinkActionRequest(BaseModel):
     response_note: Optional[str] = None
 
 
+class TeacherLinkRevokeRequest(BaseModel):
+    username: str
+    link_id: int
+    reason: Optional[str] = None
+
+
 class TeacherStudentProgressRequest(BaseModel):
     username: str
     student_username: str
@@ -182,6 +188,7 @@ class TeacherLinkListResponse(BaseModel):
 
 
 class TeacherStudentSummary(BaseModel):
+    teacher_link_id: Optional[int] = None
     username: str
     display_name: Optional[str] = None
     grade_level: int

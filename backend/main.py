@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from contextlib import asynccontextmanager
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage
-from .models import InitRequest, ChatRequest, ChatResponse, BookSelectRequest, BookSelectResponse, InitSessionRequest, InitSessionResponse, ResumeShelfRequest, ResumeShelfResponse, PlayerStatsRequest, GraphDataRequest, GraphDataResponse, GraphNode, SetCurrentNodeRequest, RegisterRequest, LoginRequest, LogoutRequest, PasswordResetRequest, ProfileRequest, UpdateProfileRequest, ProfileResponse, TeacherLinkRequest, TeacherLinkListRequest, TeacherLinkActionRequest, TeacherStudentProgressRequest, TeacherLinkSummary, TeacherLinkListResponse, TeacherDashboardResponse, TeacherStudentProgressResponse, TeacherStudentSummary, StudentTopicProgressSummary, StudentNodeProgressSummary, StudentActivitySessionSummary, BillingStatusRequest, BillingCheckoutRequest, BillingPortalRequest, BillingStatusResponse, BillingCheckoutResponse, BillingPortalResponse, RedeemAccessCodeRequest, RedeemAccessCodeResponse, CreatePromoCodeRequest, CreatePromoCodeResponse, GrantAccessRequest, RevokeAccessGrantRequest, RevokePromoCodeRequest, ListAccessGrantsRequest, ListPromoCodesRequest, AccessGrantSummary, PromoCodeSummary, AccessGrantListResponse, PromoCodeListResponse, NodeLinksRequest, NodeLinksResponse, SubmitNodeLinkRequest, SubmitNodeLinkResponse, ReviewNodeLinkRequest, PendingNodeLinksRequest, PendingNodeLinksResponse, NodeLinkSummary
+from .models import InitRequest, ChatRequest, ChatResponse, BookSelectRequest, BookSelectResponse, InitSessionRequest, InitSessionResponse, ResumeShelfRequest, ResumeShelfResponse, PlayerStatsRequest, GraphDataRequest, GraphDataResponse, GraphNode, SetCurrentNodeRequest, RegisterRequest, LoginRequest, LogoutRequest, PasswordResetRequest, ProfileRequest, UpdateProfileRequest, ProfileResponse, TeacherLinkRequest, TeacherLinkListRequest, TeacherLinkActionRequest, TeacherLinkRevokeRequest, TeacherStudentProgressRequest, TeacherLinkSummary, TeacherLinkListResponse, TeacherDashboardResponse, TeacherStudentProgressResponse, TeacherStudentSummary, StudentTopicProgressSummary, StudentNodeProgressSummary, StudentActivitySessionSummary, BillingStatusRequest, BillingCheckoutRequest, BillingPortalRequest, BillingStatusResponse, BillingCheckoutResponse, BillingPortalResponse, RedeemAccessCodeRequest, RedeemAccessCodeResponse, CreatePromoCodeRequest, CreatePromoCodeResponse, GrantAccessRequest, RevokeAccessGrantRequest, RevokePromoCodeRequest, ListAccessGrantsRequest, ListPromoCodesRequest, AccessGrantSummary, PromoCodeSummary, AccessGrantListResponse, PromoCodeListResponse, NodeLinksRequest, NodeLinksResponse, SubmitNodeLinkRequest, SubmitNodeLinkResponse, ReviewNodeLinkRequest, PendingNodeLinksRequest, PendingNodeLinksResponse, NodeLinkSummary
 from .graph import create_graph
 from .database import init_db, get_db, Player, TopicProgress, AuthSession
 from .config import load_local_env, normalize_avatar_id, normalize_account_status
@@ -15,7 +15,7 @@ from .billing import build_billing_status, create_checkout_session as create_bil
 from .access_grants import create_manual_access_grant, create_promo_code, list_access_grants, list_promo_codes, redeem_promo_code, revoke_access_grant, revoke_promo_code, serialize_access_grant, serialize_promo_code
 from .node_links import get_node_link_count_map, get_node_links_for_node, list_reviewable_node_links, review_node_link, serialize_node_link, submit_node_link
 from .student_tracking import end_activity_session, record_topic_session_start, start_activity_session, touch_activity_session, touch_current_node
-from .teacher_portal import assert_teacher_can_view_student, build_student_progress_detail, create_teacher_request, get_teacher_dashboard_payload, list_teacher_links_for_user, respond_to_teacher_request, serialize_teacher_link
+from .teacher_portal import assert_teacher_can_view_student, build_student_progress_detail, create_teacher_request, get_teacher_dashboard_payload, list_teacher_links_for_user, respond_to_teacher_request, revoke_teacher_link, serialize_teacher_link
 import uuid
 import json
 from fastapi.responses import HTMLResponse
@@ -207,15 +207,23 @@ def _is_admin_user(player: Player | None) -> bool:
     return (player.role or "").strip() == ADMIN_ROLE or player.username in _admin_usernames()
 
 
+def _is_teacher_like_user(player: Player | None) -> bool:
+    if not player:
+        return False
+    return (player.role or "").strip() == "Teacher" or _is_admin_user(player)
+
+
+def _effective_learning_role(player: Player | None) -> str:
+    return "Teacher" if _is_teacher_like_user(player) else "Student"
+
+
 def _ensure_admin_user(player: Player):
     if not _is_admin_user(player):
         raise HTTPException(status_code=403, detail="Administrator access required")
 
 
 def _ensure_teacher_or_admin_user(player: Player):
-    if _is_admin_user(player):
-        return
-    if (player.role or "").strip() != "Teacher":
+    if not _is_teacher_like_user(player):
         raise HTTPException(status_code=403, detail="Teacher access required")
 
 
@@ -449,7 +457,7 @@ async def get_player_stats(request: PlayerStatsRequest, current_user: Player = D
 
     stats["grade_completion"] = grade_percent
     stats["current_grade_level"] = player.grade_level
-    stats["role"] = player.role
+    stats["role"] = _effective_learning_role(player)
     stats["avatar_id"] = normalize_avatar_id(player.avatar_id)
     stats["has_personal_openai_key"] = bool(player.openai_api_key_encrypted)
     stats["openai_key_hint"] = mask_secret(player.openai_api_key_encrypted)
@@ -781,6 +789,22 @@ async def respond_teacher_link(request: TeacherLinkActionRequest, current_user: 
         link_id=request.link_id,
         action=request.action,
         response_note=_clean_optional_text(request.response_note),
+    )
+    db.commit()
+    db.refresh(link)
+    return TeacherLinkSummary(**serialize_teacher_link(link))
+
+
+@app.post("/revoke_teacher_link", response_model=TeacherLinkSummary)
+async def revoke_teacher_link_endpoint(request: TeacherLinkRevokeRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_current_user_matches(current_user, request.username)
+    _update_auth_session_last_seen(db, current_user)
+
+    link = revoke_teacher_link(
+        db,
+        actor=current_user,
+        link_id=request.link_id,
+        reason=_clean_optional_text(request.reason),
     )
     db.commit()
     db.refresh(link)
@@ -1129,7 +1153,7 @@ async def select_book(request: BookSelectRequest, current_user: Player = Depends
         "currrent_action": "IDLE",
         "last_problem": "",
         "next_dest": "GENERAL_CHAT",
-        "role": player.role, # [NEW]
+        "role": _effective_learning_role(player), # Treat admins as teacher-capable in tutoring flows
         "view_as_student": False # Default
     }
     
@@ -1179,7 +1203,7 @@ async def select_book(request: BookSelectRequest, current_user: Player = Depends
         mastery=progress.mastery_score,
         history_summary=full_summary,
         state_snapshot=state_snapshot,
-        role=player.role # [NEW]
+        role=_effective_learning_role(player) # Treat admins as teacher-capable in classroom UI
     )
 
 @app.post("/chat", response_model=ChatResponse)

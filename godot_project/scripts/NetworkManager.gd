@@ -189,6 +189,12 @@ func _on_chat_completed(result, response_code, headers, body):
 			if state.has("mastery"):
 				print("NetworkManager: Progress Update Received: ", state["mastery"])
 				emit_signal("progress_updated", 0, 0, state["mastery"])
+	else:
+		var error_message = "Chat request failed."
+		var parsed = JSON.parse_string(response_body)
+		if typeof(parsed) == TYPE_DICTIONARY and parsed.has("detail"):
+			error_message = str(parsed["detail"])
+		emit_signal("error_occurred", error_message)
 
 func post_request(endpoint: String, data: Dictionary, success_callback: Callable, error_callback: Callable):
 	var http = HTTPRequest.new()

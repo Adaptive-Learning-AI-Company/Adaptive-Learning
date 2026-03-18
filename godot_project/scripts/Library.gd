@@ -82,6 +82,7 @@ var teacher_request_username_input: LineEdit
 var teacher_request_note_input: LineEdit
 var teacher_request_button: Button
 var teacher_links_list: ItemList
+var teacher_revoke_button: Button
 var teacher_link_status_label: Label
 var billing_plan_label: Label
 var billing_usage_label: Label
@@ -117,6 +118,7 @@ var teacher_pending_entries := []
 var teacher_student_entries := []
 var teacher_pending_list: ItemList
 var teacher_student_list: ItemList
+var teacher_drop_button: Button
 var teacher_detail_label: RichTextLabel
 var teacher_status_label: Label
 
@@ -663,6 +665,11 @@ func _setup_profile_window():
 	teacher_links_list.custom_minimum_size = Vector2(0, 120)
 	content.add_child(teacher_links_list)
 
+	teacher_revoke_button = Button.new()
+	teacher_revoke_button.text = "Remove Selected Teacher Connection"
+	teacher_revoke_button.pressed.connect(_revoke_selected_teacher_link)
+	content.add_child(teacher_revoke_button)
+
 	teacher_link_status_label = Label.new()
 	teacher_link_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD
 	content.add_child(teacher_link_status_label)
@@ -1135,6 +1142,11 @@ func _setup_teacher_window():
 	teacher_student_list.item_selected.connect(_load_selected_teacher_student)
 	root.add_child(teacher_student_list)
 
+	teacher_drop_button = Button.new()
+	teacher_drop_button.text = "Drop Selected Student"
+	teacher_drop_button.pressed.connect(_drop_selected_teacher_student)
+	root.add_child(teacher_drop_button)
+
 	var refresh_button = Button.new()
 	refresh_button.text = "Refresh Dashboard"
 	refresh_button.pressed.connect(_refresh_teacher_dashboard)
@@ -1218,6 +1230,8 @@ func _on_teacher_dashboard_loaded(_code, response):
 			var completion = "%.1f%%" % float(entry.get("grade_completion", 0.0))
 			var display_name = str(entry.get("display_name", entry.get("username", "student")))
 			teacher_student_list.add_item(display_name + " | Grade " + str(entry.get("grade_level", "?")) + " | " + completion)
+	if teacher_drop_button:
+		teacher_drop_button.disabled = teacher_student_entries.is_empty()
 
 	if teacher_status_label:
 		teacher_status_label.text = "Pending requests: %d | Linked students: %d" % [teacher_pending_entries.size(), teacher_student_entries.size()]
@@ -1250,6 +1264,43 @@ func _respond_to_selected_teacher_request(action: String):
 		_fetch_teacher_links()
 	, func(_code, err):
 		teacher_status_label.text = err if err != "" else "Unable to update teacher request."
+	)
+
+
+func _drop_selected_teacher_student():
+	if teacher_student_list == null or teacher_status_label == null:
+		return
+	var selected = teacher_student_list.get_selected_items()
+	if selected.is_empty():
+		teacher_status_label.text = "Select a linked student first."
+		return
+
+	var entry = teacher_student_entries[selected[0]]
+	var link_id = int(entry.get("teacher_link_id", -1))
+	if link_id <= 0:
+		teacher_status_label.text = "This student link is missing a teacher link id."
+		return
+
+	if teacher_drop_button:
+		teacher_drop_button.disabled = true
+	teacher_status_label.text = "Removing linked student..."
+	var payload = {
+		"username": GameManager.player_username,
+		"link_id": link_id,
+		"reason": "Dropped by teacher"
+	}
+	NetworkManager.post_request("/revoke_teacher_link", payload, func(_code, _response):
+		if teacher_drop_button:
+			teacher_drop_button.disabled = false
+		if teacher_detail_label:
+			teacher_detail_label.text = "Student link removed. Select another student to view detailed progress."
+		teacher_status_label.text = "Student removed from teacher roster."
+		_refresh_teacher_dashboard()
+		_fetch_teacher_links()
+	, func(_code, err):
+		if teacher_drop_button:
+			teacher_drop_button.disabled = false
+		teacher_status_label.text = err if err != "" else "Unable to remove student."
 	)
 
 
@@ -1479,6 +1530,9 @@ func _on_profile_loaded(_code, response):
 		teacher_request_username_input.editable = profile_role == "Student"
 	if teacher_request_note_input:
 		teacher_request_note_input.editable = profile_role == "Student"
+	if teacher_revoke_button:
+		teacher_revoke_button.visible = profile_role == "Student"
+		teacher_revoke_button.disabled = profile_role != "Student"
 	if profile_status_label:
 		profile_status_label.text = ""
 
@@ -1509,6 +1563,38 @@ func _on_teacher_links_loaded(_code, response):
 			teacher_link_status_label.text = "No teacher connections yet."
 		else:
 			teacher_link_status_label.text = "Teacher links loaded."
+
+
+func _revoke_selected_teacher_link():
+	if teacher_links_list == null or teacher_link_status_label == null:
+		return
+	if profile_role != "Student":
+		teacher_link_status_label.text = "Only students can remove teacher connections here."
+		return
+	var selected = teacher_links_list.get_selected_items()
+	if selected.is_empty():
+		teacher_link_status_label.text = "Select a teacher connection first."
+		return
+
+	var entry = teacher_link_entries[selected[0]]
+	var payload = {
+		"username": GameManager.player_username,
+		"link_id": int(entry.get("id", -1)),
+		"reason": "Revoked by student"
+	}
+	if teacher_revoke_button:
+		teacher_revoke_button.disabled = true
+	teacher_link_status_label.text = "Removing teacher connection..."
+	NetworkManager.post_request("/revoke_teacher_link", payload, func(_code, _response):
+		if teacher_revoke_button:
+			teacher_revoke_button.disabled = false
+		teacher_link_status_label.text = "Teacher connection removed."
+		_fetch_teacher_links()
+	, func(_code, err):
+		if teacher_revoke_button:
+			teacher_revoke_button.disabled = false
+		teacher_link_status_label.text = err if err != "" else "Unable to remove teacher connection."
+	)
 
 
 func _submit_teacher_request():
@@ -2377,7 +2463,7 @@ func _book_emphasis_for_level(level: int) -> String:
 	if delta == 0:
 		return "focus"
 
-	if role == "teacher":
+	if role == "teacher" or role == "admin":
 		if delta <= 2:
 			return "mid"
 		return "dim"

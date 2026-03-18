@@ -27,6 +27,11 @@ def _clean_optional_text(value: str | None) -> str | None:
     return cleaned or None
 
 
+def _is_teacher_like_role(role: str | None) -> bool:
+    normalized = (role or "").strip()
+    return normalized in {"Teacher", "Admin"}
+
+
 def serialize_teacher_link(link: TeacherStudentLink) -> dict:
     return {
         "id": link.id,
@@ -80,6 +85,7 @@ def build_student_summary(
     db: Session,
     student: Player,
     accepted_at: datetime | None = None,
+    teacher_link_id: int | None = None,
 ) -> dict:
     topic_progress_rows = db.query(TopicProgress).filter(TopicProgress.player_id == student.id).all()
     activity_rows = db.query(StudentActivitySession).filter(StudentActivitySession.player_id == student.id).all()
@@ -107,6 +113,7 @@ def build_student_summary(
             last_seen_at = candidate
 
     return {
+        "teacher_link_id": teacher_link_id,
         "username": student.username,
         "display_name": student.display_name or student.username,
         "grade_level": int(student.grade_level or 0),
@@ -154,7 +161,12 @@ def build_student_progress_detail(
         StudentActivitySession.started_at.desc()
     ).limit(30).all()
 
-    summary = build_student_summary(db, student, accepted_at=teacher_link.accepted_at if teacher_link else None)
+    summary = build_student_summary(
+        db,
+        student,
+        accepted_at=teacher_link.accepted_at if teacher_link else None,
+        teacher_link_id=teacher_link.id if teacher_link else None,
+    )
 
     topics = []
     for row in topic_rows:
@@ -245,7 +257,7 @@ def create_teacher_request(
     teacher = db.query(Player).filter(Player.username == cleaned_teacher_username).first()
     if teacher is None:
         raise HTTPException(status_code=404, detail="Teacher account not found.")
-    if (teacher.role or "").strip() != "Teacher" and (teacher.role or "").strip() != "Admin":
+    if not _is_teacher_like_role(teacher.role):
         raise HTTPException(status_code=400, detail="That account is not eligible to be linked as a teacher.")
 
     link = db.query(TeacherStudentLink).filter(
@@ -287,7 +299,7 @@ def create_teacher_request(
 
 def list_teacher_links_for_user(db: Session, user: Player) -> list[TeacherStudentLink]:
     query = db.query(TeacherStudentLink)
-    if (user.role or "").strip() == "Teacher":
+    if _is_teacher_like_role(user.role):
         query = query.filter(TeacherStudentLink.teacher_id == user.id)
     else:
         query = query.filter(TeacherStudentLink.student_id == user.id)
@@ -331,6 +343,35 @@ def respond_to_teacher_request(
     return link
 
 
+def revoke_teacher_link(
+    db: Session,
+    actor: Player,
+    link_id: int,
+    reason: str | None = None,
+) -> TeacherStudentLink:
+    link = db.query(TeacherStudentLink).filter(TeacherStudentLink.id == link_id).first()
+    if link is None:
+        raise HTTPException(status_code=404, detail="Teacher link request not found.")
+
+    actor_role = (actor.role or "").strip()
+    is_admin = actor_role == "Admin"
+    is_linked_student = link.student_id == actor.id
+    is_linked_teacher = link.teacher_id == actor.id
+    if not is_admin and not is_linked_student and not is_linked_teacher:
+        raise HTTPException(status_code=403, detail="Only the linked student, linked teacher, or an admin can revoke this link.")
+
+    if link.status == STATUS_REVOKED and link.revoked_at is not None:
+        raise HTTPException(status_code=400, detail="This teacher link has already been revoked.")
+
+    now = _utcnow()
+    link.status = STATUS_REVOKED
+    link.response_note = _clean_optional_text(reason)
+    link.responded_at = now
+    link.revoked_at = now
+    link.updated_at = now
+    return link
+
+
 def get_teacher_dashboard_payload(db: Session, teacher: Player) -> dict:
     pending_links = db.query(TeacherStudentLink).filter(
         TeacherStudentLink.teacher_id == teacher.id,
@@ -345,7 +386,12 @@ def get_teacher_dashboard_payload(db: Session, teacher: Player) -> dict:
     ).order_by(TeacherStudentLink.accepted_at.desc(), TeacherStudentLink.updated_at.desc()).all()
 
     accepted_students = [
-        build_student_summary(db, link.student, accepted_at=link.accepted_at)
+        build_student_summary(
+            db,
+            link.student,
+            accepted_at=link.accepted_at,
+            teacher_link_id=link.id,
+        )
         for link in accepted_links
         if link.student is not None
     ]
@@ -376,7 +422,7 @@ def assert_teacher_can_view_student(
 ) -> TeacherStudentLink | None:
     if (teacher.role or "").strip() == "Admin":
         return None
-    if (teacher.role or "").strip() != "Teacher":
+    if not _is_teacher_like_role(teacher.role):
         raise HTTPException(status_code=403, detail="Teacher access is required.")
 
     link = get_accepted_teacher_link(db, teacher, student)

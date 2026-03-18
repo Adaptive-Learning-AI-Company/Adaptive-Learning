@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Adaptive Tutor | Browser Learning Studio</title>
-  <meta name="description" content="Adaptive Tutor runs directly in the browser on desktop and iPad, with a 3D learning library powered by the Adaptive Tutor backend.">
+  <meta name="description" content="Adaptive Tutor runs directly in the browser on desktop and iPad, giving students a 3D learning library while teachers and families can stay connected to progress.">
   <meta name="theme-color" content="#14212f">
   <link rel="manifest" href="./site.webmanifest">
   <link rel="icon" type="image/png" href="./app/index.icon.png">
@@ -23,16 +23,19 @@
         <h1>A living library for curious students.</h1>
         <p class="lede">
           Step into a 3D learning space where students explore subjects, continue unfinished lessons,
-          and get guided support that adapts to their level in real time.
+          and get guided support that adapts to their level in real time, with optional teacher connection
+          and progress visibility built in.
         </p>
         <div class="hero-actions">
-          <a class="primary-link" href="./app/">Enter the Library</a>
+          <a class="primary-link" href="./app/">Launch in Browser</a>
           <a class="secondary-link" href="#how-it-works">See How It Works</a>
+          <a class="secondary-link" href="#downloads">Get Native Apps</a>
         </div>
         <ul class="hero-notes">
           <li>Built for independent practice and guided discovery</li>
           <li>Works on desktop and modern tablets, including iPad</li>
           <li>Math, science, social studies, and English in one space</li>
+          <li>Students can connect with a teacher who can review progress after approval</li>
         </ul>
         <div class="hero-stat-strip">
           <div class="hero-stat">
@@ -44,8 +47,8 @@
             <span class="hero-stat-label">library world</span>
           </div>
           <div class="hero-stat">
-            <span class="hero-stat-value">Web</span>
-            <span class="hero-stat-label">desktop + tablet</span>
+            <span class="hero-stat-value">Linked</span>
+            <span class="hero-stat-label">student + teacher view</span>
           </div>
         </div>
       </div>
@@ -59,6 +62,11 @@
           <span class="panel-label">Adaptive Support</span>
           <strong>Tutoring that adjusts</strong>
           <p>Lessons respond to grade level, progress, and context so students can move forward without getting lost.</p>
+        </div>
+        <div class="panel-card">
+          <span class="panel-label">Teacher Connection</span>
+          <strong>Student-owned, teacher-visible</strong>
+          <p>Students can invite a teacher, the teacher must accept, and then progress becomes visible in a structured dashboard.</p>
         </div>
       </div>
     </header>
@@ -86,6 +94,35 @@
         </article>
       </section>
 
+      <section class="teacher-student-strip">
+        <div class="teacher-student-copy">
+          <p class="eyebrow">Teacher-Student Workflow</p>
+          <h2>Students stay in control. Teachers gain clarity.</h2>
+          <p>
+            A student can add a teacher directly from the app, the teacher must accept the connection,
+            and only then does the teacher gain access to the student’s learning progress. That keeps the relationship explicit,
+            private, and easy to understand.
+          </p>
+        </div>
+        <div class="teacher-student-grid">
+          <article class="workflow-card">
+            <span class="workflow-step">1</span>
+            <h3>Student requests</h3>
+            <p>The student adds a teacher account from profile settings instead of sharing credentials or screenshots.</p>
+          </article>
+          <article class="workflow-card">
+            <span class="workflow-step">2</span>
+            <h3>Teacher accepts</h3>
+            <p>The teacher reviews and approves the request before any student data becomes visible.</p>
+          </article>
+          <article class="workflow-card">
+            <span class="workflow-step">3</span>
+            <h3>Progress becomes visible</h3>
+            <p>Teachers can review learning time, recent activity, topic status, node progress, and answer accuracy trends.</p>
+          </article>
+        </div>
+      </section>
+
       <section class="split-callout">
         <div>
           <p class="eyebrow">Why It Feels Different</p>
@@ -105,6 +142,25 @@
         </div>
       </section>
 
+      <section class="insight-grid">
+        <article class="insight-card">
+          <p class="eyebrow">For Teachers</p>
+          <h2>See more than a final score.</h2>
+          <p>
+            Review where a student is in the knowledge graph, which topics are active, how long they are working,
+            and how consistently they are answering correctly.
+          </p>
+        </article>
+        <article class="insight-card">
+          <p class="eyebrow">For Families</p>
+          <h2>Support without micromanaging.</h2>
+          <p>
+            Students can work independently in the browser while the adults around them have a clearer picture of momentum,
+            persistence, and where help may still be needed.
+          </p>
+        </article>
+      </section>
+
       <section class="audience-grid">
         <article class="audience-card">
           <p class="eyebrow">For Students</p>
@@ -116,14 +172,56 @@
           <h2>Easy to open, easy to revisit</h2>
           <p>No store download required. Open the site, sign in, and step back into the same learning environment.</p>
         </article>
+        <article class="audience-card">
+          <p class="eyebrow">For Teachers</p>
+          <h2>Connected oversight, not disconnected reports</h2>
+          <p>Accept a student connection and review meaningful learning activity instead of guessing from isolated assignments.</p>
+        </article>
       </section>
 
       <section class="launch-strip">
         <div>
           <p class="eyebrow">Start Here</p>
-          <h2>Open the tutoring library.</h2>
+          <h2>Launch in Browser.</h2>
         </div>
-        <a class="primary-link" href="./app/">Launch Adaptive Tutor</a>
+        <a class="primary-link" href="./app/">Launch in Browser</a>
+      </section>
+
+      <section class="download-strip" id="downloads">
+        <div class="download-strip-copy">
+          <p class="eyebrow">Native Apps</p>
+          <h2>Use Adaptive Tutor in the browser or install a native build.</h2>
+          <p>
+            The browser version remains the fastest way to get started, but native downloads are available for Windows,
+            Linux, and Android. Android installs currently require sideloading.
+          </p>
+        </div>
+        <div class="download-grid">
+          <article class="download-card">
+            <p class="download-platform">Windows</p>
+            <h3>Desktop App</h3>
+            <p>Download the packaged Windows build as a ZIP and run it locally.</p>
+            <a class="primary-link download-link" href="./downloads/Adaptive-Tutor-Windows.zip" download>Download For Windows</a>
+          </article>
+          <article class="download-card">
+            <p class="download-platform">Linux</p>
+            <h3>Desktop App</h3>
+            <p>Grab the Linux native build as a ZIP and launch it from your machine.</p>
+            <a class="primary-link download-link" href="./downloads/Adaptive-Tutor-Linux.zip" download>Download For Linux</a>
+          </article>
+          <article class="download-card">
+            <p class="download-platform">Android</p>
+            <h3>Sideload APK</h3>
+            <p>Install the Android APK manually on supported devices. Sideloading is required.</p>
+            <a class="primary-link download-link" href="./downloads/Adaptive-Tutor-Android.apk" download>Download Android APK</a>
+          </article>
+          <article class="download-card download-card-soon">
+            <p class="download-platform">iPhone / iPad</p>
+            <h3>Native App</h3>
+            <p>Native iPhone and iPad apps are planned. For now, the browser version already works on iPad.</p>
+            <span class="coming-soon-pill">Coming Soon</span>
+          </article>
+        </div>
       </section>
     </main>
   </div>

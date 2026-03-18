@@ -41,6 +41,8 @@ func _ready():
 		
 	if not NetworkManager.progress_updated.is_connected(_on_progress_updated):
 		NetworkManager.progress_updated.connect(_on_progress_updated)
+	if not NetworkManager.error_occurred.is_connected(_on_network_error):
+		NetworkManager.error_occurred.connect(_on_network_error)
 	
 	# Sync Username
 	var gm = get_node("/root/GameManager")
@@ -445,9 +447,17 @@ func _on_session_ready(data):
 		NetworkManager.send_message("Please start the lesson.", view_as_student, override_val)
 		
 	# Show Teacher Toggle if Role is Teacher
-	if data.get("role") == "Teacher":
+	var role_name = str(data.get("role", "")).to_lower()
+	if role_name == "teacher" or role_name == "admin":
 		btn_mode_toggle.visible = true
 		append_chat("System", "Teacher Mode Active. Use toggle to switch views.")
+
+
+func _on_network_error(msg: String):
+	_stop_loading()
+	if lbl_status:
+		lbl_status.text = msg
+	append_chat("System", msg)
 
 func _on_progress_updated(xp, level, mastery):
 	update_gauge(mastery)

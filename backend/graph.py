@@ -36,6 +36,11 @@ class AgentState(TypedDict):
 DEFAULT_MAIN_MODEL, DEFAULT_FAST_MODEL = get_hosted_models()
 
 
+def _is_teacher_role(role: str | None) -> bool:
+    normalized = (role or "").strip()
+    return normalized in {"Teacher", "Admin"}
+
+
 def _build_llm(state: AgentState, model: str, allow_preferred_model: bool = False, **kwargs):
     username = state.get("username") if state else None
     api_key, resolved_model, billing_source = _resolve_llm_settings_for_user(
@@ -281,7 +286,7 @@ def teacher_node(state: AgentState):
     view_as_student = state.get("view_as_student", False)
     
     prompt = ""
-    if role == "Teacher" and not view_as_student:
+    if _is_teacher_role(role) and not view_as_student:
          print("[AGENTS] Using TEACHER_OF_TEACHERS prompt")
          
          # Fetch actual teacher grade from DB (since state['grade_level'] might be the content level)
@@ -331,7 +336,7 @@ def teacher_node(state: AgentState):
             
         elif "[System] Update Role Context" in last_content:
             # Role Switched
-            if role == "Teacher" and not view_as_student:
+            if _is_teacher_role(role) and not view_as_student:
                  directive = f"Role Switched to Teacher View. The user is a colleague. Provide a Teaching Guide for '{current_node.label if current_node else 'this topic'}' immediately."
             else:
                  directive = f"Role Switched to Student View. The user is a student (Grade {state['grade_level']}). Introduce the topic '{current_node.label if current_node else 'New Topic'}' in a fun way and ask a checking question."

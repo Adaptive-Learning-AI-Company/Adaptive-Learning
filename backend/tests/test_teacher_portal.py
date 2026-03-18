@@ -13,7 +13,7 @@ from backend.student_tracking import (
     touch_activity_session,
     touch_current_node,
 )
-from backend.teacher_portal import build_student_progress_detail, create_teacher_request, get_teacher_dashboard_payload, respond_to_teacher_request
+from backend.teacher_portal import build_student_progress_detail, create_teacher_request, get_teacher_dashboard_payload, list_teacher_links_for_user, respond_to_teacher_request, revoke_teacher_link
 
 
 def _make_session():
@@ -84,6 +84,7 @@ def test_teacher_request_acceptance_and_dashboard_summary():
         assert dashboard["pending_requests"] == []
         assert len(dashboard["accepted_students"]) == 1
         summary = dashboard["accepted_students"][0]
+        assert summary["teacher_link_id"] == link.id
         assert summary["username"] == "student1"
         assert summary["current_topic"] == "Math 5"
         assert summary["current_node"] is None
@@ -140,5 +141,66 @@ def test_student_progress_detail_includes_topics_nodes_and_sessions():
         assert detail["nodes"][0]["average_score_percent"] == 50.0
         assert len(detail["recent_sessions"]) == 1
         assert detail["recent_sessions"][0]["last_topic_name"] == "Science 5"
+    finally:
+        db.close()
+
+
+def test_student_can_revoke_teacher_link():
+    db = _make_session()
+    try:
+        student = _add_player(db, "student3", "Student")
+        teacher = _add_player(db, "teacher3", "Teacher")
+
+        link = create_teacher_request(db, student, "teacher3")
+        respond_to_teacher_request(db, teacher, link.id, "ACCEPTED")
+        db.commit()
+
+        revoked = revoke_teacher_link(db, student, link.id, reason="Switching teachers")
+        db.commit()
+
+        assert revoked.status == "REVOKED"
+        assert revoked.revoked_at is not None
+        assert revoked.response_note == "Switching teachers"
+        dashboard = get_teacher_dashboard_payload(db, teacher)
+        assert dashboard["accepted_students"] == []
+    finally:
+        db.close()
+
+
+def test_teacher_can_drop_student_link():
+    db = _make_session()
+    try:
+        student = _add_player(db, "student4", "Student")
+        teacher = _add_player(db, "teacher4", "Teacher")
+
+        link = create_teacher_request(db, student, "teacher4")
+        respond_to_teacher_request(db, teacher, link.id, "ACCEPTED")
+        db.commit()
+
+        revoked = revoke_teacher_link(db, teacher, link.id, reason="No longer supervising")
+        db.commit()
+
+        assert revoked.status == "REVOKED"
+        assert revoked.revoked_at is not None
+        assert revoked.response_note == "No longer supervising"
+        links = get_teacher_dashboard_payload(db, teacher)
+        assert links["accepted_students"] == []
+    finally:
+        db.close()
+
+
+def test_admin_behaves_like_teacher_for_teacher_links():
+    db = _make_session()
+    try:
+        student = _add_player(db, "student5", "Student")
+        admin = _add_player(db, "admin1", "Admin")
+
+        link = create_teacher_request(db, student, "admin1", request_note="Please supervise")
+        db.commit()
+
+        admin_links = list_teacher_links_for_user(db, admin)
+        assert len(admin_links) == 1
+        assert admin_links[0].id == link.id
+        assert admin_links[0].teacher_id == admin.id
     finally:
         db.close()

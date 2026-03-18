@@ -1,9 +1,14 @@
 AddType application/wasm .wasm
 AddType application/manifest+json .webmanifest
 AddType application/javascript .js
+AddType application/vnd.android.package-archive .apk
+AddType application/zip .zip
+AddType application/octet-stream .exe
+AddType application/octet-stream .x86_64
+AddType application/octet-stream .pck
 
 <IfModule mod_headers.c>
-  <FilesMatch "\.(wasm|js|pck|png|ico|webmanifest)$">
+  <FilesMatch "\.(wasm|js|pck|png|ico|webmanifest|apk|zip|exe|x86_64)$">
     Header set Cache-Control "public, max-age=604800"
   </FilesMatch>
 
