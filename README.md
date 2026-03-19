@@ -42,6 +42,7 @@ For the full rollout checklist for this upgrade, see [UPGRADE_INSTALLATION_GUIDE
    Set the private values in `.env` or `.env.secret`:
    ```bash
    OPENAI_API_KEY="sk-..."          # Platform fallback key
+   GOOGLE_API_KEY="..."             # Optional Gemini platform key for hosted Gemini models
    EMAIL_PASSWORD="..."             # IONOS mailbox password for reset emails
    SECRET_KEY="..."                 # JWT/reset-token signing secret
    PROFILE_SECRET_KEY="..."         # Profile secret encryption key
@@ -53,6 +54,7 @@ For the full rollout checklist for this upgrade, see [UPGRADE_INSTALLATION_GUIDE
    STRIPE_WEBHOOK_SECRET="..."
    ```
    Public/runtime values like `PUBLIC_BASE_URL`, `CORS_ALLOWED_ORIGINS`, `EMAIL_HOST`, `EMAIL_USER`, `ADMIN_USERNAMES`, and Stripe price IDs can live in [`.env.public`](/home/jglossner/Adaptive-Learning/.env.public).
+   Admins can switch the hosted tutor `teacher`, `verifier`, and `fast` models from the in-app Admin Access screen. Gemini choices only become selectable if `GOOGLE_API_KEY` is configured on the server.
    Tutoring access is locked down by default. Only users with an active subscription or access code can reach the agents unless you explicitly set `ALLOW_OPEN_TUTORING_ACCESS=true` for a temporary open-access environment.
    On Render, copy values from `.env.public` plus your private `.env` or `.env.secret`, or mount the secret values at `/etc/secrets/.env`, and also provide `DATABASE_URL` from your managed Postgres instance.
    Godot exports now derive their production backend URL from `PUBLIC_BASE_URL`; no manual `Secrets.gd` file is required.

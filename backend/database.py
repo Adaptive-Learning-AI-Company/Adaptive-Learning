@@ -216,6 +216,7 @@ class Interaction(Base):
     output_tokens = Column(Integer, nullable=True)
     latency_ms = Column(Integer, nullable=True)
     billing_source = Column(String, nullable=True)
+    service_tier = Column(String, nullable=True)
     estimated_cost_cents = Column(Integer, nullable=True)
     event_type = Column(String, index=True, nullable=True)
     score_percent = Column(Integer, nullable=True)
@@ -481,6 +482,19 @@ class NodeLink(Base):
     submitted_by = relationship("Player", foreign_keys=[submitted_by_player_id])
     reviewed_by = relationship("Player", foreign_keys=[reviewed_by_player_id])
 
+
+class AppSetting(Base):
+    __tablename__ = "app_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String, unique=True, index=True, nullable=False)
+    value_text = Column(Text, nullable=True)
+    updated_by_player_id = Column(Integer, ForeignKey("players.id"), nullable=True)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+    updated_by = relationship("Player", foreign_keys=[updated_by_player_id])
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     ensure_schema()
@@ -557,6 +571,7 @@ def ensure_schema():
             "output_tokens": "ALTER TABLE interactions ADD COLUMN output_tokens INTEGER",
             "latency_ms": "ALTER TABLE interactions ADD COLUMN latency_ms INTEGER",
             "billing_source": "ALTER TABLE interactions ADD COLUMN billing_source VARCHAR",
+            "service_tier": "ALTER TABLE interactions ADD COLUMN service_tier VARCHAR",
             "estimated_cost_cents": "ALTER TABLE interactions ADD COLUMN estimated_cost_cents INTEGER",
             "event_type": "ALTER TABLE interactions ADD COLUMN event_type VARCHAR",
             "score_percent": "ALTER TABLE interactions ADD COLUMN score_percent INTEGER",
@@ -596,6 +611,7 @@ def ensure_indexes():
         "CREATE INDEX IF NOT EXISTS ix_interactions_topic_name ON interactions (topic_name)",
         "CREATE INDEX IF NOT EXISTS ix_interactions_model_name ON interactions (model_name)",
         "CREATE INDEX IF NOT EXISTS ix_interactions_billing_source ON interactions (billing_source)",
+        "CREATE INDEX IF NOT EXISTS ix_interactions_service_tier ON interactions (service_tier)",
         "CREATE INDEX IF NOT EXISTS ix_interactions_event_type ON interactions (event_type)",
         "CREATE INDEX IF NOT EXISTS ix_interactions_is_correct ON interactions (is_correct)",
         "CREATE INDEX IF NOT EXISTS ix_auth_sessions_player_id ON auth_sessions (player_id)",
@@ -629,6 +645,7 @@ def ensure_indexes():
         "CREATE INDEX IF NOT EXISTS ix_node_links_subject_key ON node_links (subject_key)",
         "CREATE INDEX IF NOT EXISTS ix_node_links_source_kind ON node_links (source_kind)",
         "CREATE INDEX IF NOT EXISTS ix_node_links_review_status ON node_links (review_status)",
+        "CREATE INDEX IF NOT EXISTS ix_app_settings_key ON app_settings (key)",
     ]
 
     with engine.begin() as connection:
@@ -827,6 +844,7 @@ def log_interaction(
     output_tokens: int | None = None,
     latency_ms: int | None = None,
     billing_source: str | None = None,
+    service_tier: str | None = None,
     event_type: str | None = None,
     score_percent: int | None = None,
     is_correct: bool | None = None,
@@ -844,6 +862,7 @@ def log_interaction(
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 billing_source=billing_source,
+                service_tier=service_tier,
             )
 
         interaction = Interaction(
@@ -860,6 +879,7 @@ def log_interaction(
             output_tokens=output_tokens,
             latency_ms=latency_ms,
             billing_source=billing_source,
+            service_tier=service_tier,
             estimated_cost_cents=estimated_cost_cents,
             event_type=event_type,
             score_percent=score_percent,

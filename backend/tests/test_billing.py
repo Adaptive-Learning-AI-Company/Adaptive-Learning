@@ -22,6 +22,17 @@ def test_estimate_model_cost_cents_uses_default_gpt5_mini_prices(monkeypatch):
     assert estimated == 125
 
 
+def test_estimate_model_cost_cents_uses_priority_prices_when_requested(monkeypatch):
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_FAST_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL_PRIORITY_INPUT_PRICE_PER_1M", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL_PRIORITY_OUTPUT_PRICE_PER_1M", raising=False)
+
+    estimated = estimate_model_cost_cents("gpt-5-mini", 1_000_000, 500_000, service_tier="priority")
+
+    assert estimated == 225
+
+
 def test_open_tutoring_access_flag_controls_entitlement_bypass(monkeypatch):
     monkeypatch.delenv("ALLOW_OPEN_TUTORING_ACCESS", raising=False)
     assert billing_is_enforced() is True

@@ -6,12 +6,12 @@ from sqlalchemy.orm import Session
 from contextlib import asynccontextmanager
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage
-from .models import InitRequest, ChatRequest, ChatResponse, BookSelectRequest, BookSelectResponse, InitSessionRequest, InitSessionResponse, ResumeShelfRequest, ResumeShelfResponse, PlayerStatsRequest, GraphDataRequest, GraphDataResponse, GraphNode, SetCurrentNodeRequest, RegisterRequest, LoginRequest, LogoutRequest, PasswordResetRequest, ProfileRequest, UpdateProfileRequest, ProfileResponse, TeacherLinkRequest, TeacherLinkListRequest, TeacherLinkActionRequest, TeacherLinkRevokeRequest, TeacherStudentProgressRequest, TeacherLinkSummary, TeacherLinkListResponse, TeacherDashboardResponse, TeacherStudentProgressResponse, TeacherStudentSummary, StudentTopicProgressSummary, StudentNodeProgressSummary, StudentActivitySessionSummary, BillingStatusRequest, BillingCheckoutRequest, BillingPortalRequest, BillingStatusResponse, BillingCheckoutResponse, BillingPortalResponse, RedeemAccessCodeRequest, RedeemAccessCodeResponse, CreatePromoCodeRequest, CreatePromoCodeResponse, GrantAccessRequest, RevokeAccessGrantRequest, RevokePromoCodeRequest, ListAccessGrantsRequest, ListPromoCodesRequest, AccessGrantSummary, PromoCodeSummary, AccessGrantListResponse, PromoCodeListResponse, NodeLinksRequest, NodeLinksResponse, SubmitNodeLinkRequest, SubmitNodeLinkResponse, ReviewNodeLinkRequest, PendingNodeLinksRequest, PendingNodeLinksResponse, NodeLinkSummary
+from .models import InitRequest, ChatRequest, ChatResponse, BookSelectRequest, BookSelectResponse, InitSessionRequest, InitSessionResponse, ResumeShelfRequest, ResumeShelfResponse, PlayerStatsRequest, GraphDataRequest, GraphDataResponse, GraphNode, SetCurrentNodeRequest, RegisterRequest, LoginRequest, LogoutRequest, PasswordResetRequest, ProfileRequest, UpdateProfileRequest, ProfileResponse, TeacherLinkRequest, TeacherLinkListRequest, TeacherLinkActionRequest, TeacherLinkRevokeRequest, TeacherStudentProgressRequest, TeacherLinkSummary, TeacherLinkListResponse, TeacherDashboardResponse, TeacherStudentProgressResponse, TeacherStudentSummary, StudentTopicProgressSummary, StudentNodeProgressSummary, StudentActivitySessionSummary, HostedModelConfigRequest, UpdateHostedModelConfigRequest, HostedModelOptionSummary, HostedModelConfigResponse, BillingStatusRequest, BillingCheckoutRequest, BillingPortalRequest, BillingStatusResponse, BillingCheckoutResponse, BillingPortalResponse, RedeemAccessCodeRequest, RedeemAccessCodeResponse, CreatePromoCodeRequest, CreatePromoCodeResponse, GrantAccessRequest, RevokeAccessGrantRequest, RevokePromoCodeRequest, ListAccessGrantsRequest, ListPromoCodesRequest, AccessGrantSummary, PromoCodeSummary, AccessGrantListResponse, PromoCodeListResponse, NodeLinksRequest, NodeLinksResponse, SubmitNodeLinkRequest, SubmitNodeLinkResponse, ReviewNodeLinkRequest, PendingNodeLinksRequest, PendingNodeLinksResponse, NodeLinkSummary
 from .graph import create_graph
 from .database import init_db, get_db, Player, TopicProgress, AuthSession, apply_player_defaults
 from .config import load_local_env, normalize_avatar_id, normalize_account_status
 from .profile_security import encrypt_profile_secret, mask_secret
-from .billing import build_billing_status, create_checkout_session as create_billing_checkout_session, create_billing_portal_session, handle_stripe_webhook, assert_tutoring_access, increment_tutor_turn_usage
+from .billing import build_billing_status, build_hosted_model_config, create_checkout_session as create_billing_checkout_session, create_billing_portal_session, handle_stripe_webhook, assert_tutoring_access, increment_tutor_turn_usage, set_hosted_models
 from .access_grants import create_manual_access_grant, create_promo_code, list_access_grants, list_promo_codes, redeem_promo_code, revoke_access_grant, revoke_promo_code, serialize_access_grant, serialize_promo_code
 from .node_links import get_node_link_count_map, get_node_links_for_node, list_reviewable_node_links, review_node_link, serialize_node_link, submit_node_link
 from .student_tracking import end_activity_session, record_topic_session_start, start_activity_session, touch_activity_session, touch_current_node
@@ -644,6 +644,78 @@ async def admin_grant_access(request: GrantAccessRequest, current_user: Player =
     db.commit()
     db.refresh(grant)
     return AccessGrantSummary(**serialize_access_grant(grant))
+
+
+@app.post("/admin/get_hosted_model_config", response_model=HostedModelConfigResponse)
+async def admin_get_hosted_model_config(request: HostedModelConfigRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_current_user_matches(current_user, request.username)
+    _update_auth_session_last_seen(db, current_user)
+    _ensure_admin_user(current_user)
+
+    payload = build_hosted_model_config(db)
+    return HostedModelConfigResponse(
+        teacher_model=payload["teacher_model"],
+        verifier_model=payload["verifier_model"],
+        main_model=payload["main_model"],
+        fast_model=payload["fast_model"],
+        teacher_priority_enabled=payload.get("teacher_priority_enabled", False),
+        verifier_priority_enabled=payload.get("verifier_priority_enabled", False),
+        fast_priority_enabled=payload.get("fast_priority_enabled", False),
+        main_priority_enabled=payload.get("main_priority_enabled", payload.get("teacher_priority_enabled", False)),
+        teacher_provider=payload["teacher_provider"],
+        verifier_provider=payload["verifier_provider"],
+        main_provider=payload["main_provider"],
+        fast_provider=payload["fast_provider"],
+        teacher_display_name=payload.get("teacher_display_name"),
+        verifier_display_name=payload.get("verifier_display_name"),
+        main_display_name=payload.get("main_display_name"),
+        fast_display_name=payload.get("fast_display_name"),
+        catalog=[HostedModelOptionSummary(**entry) for entry in payload.get("catalog", [])],
+    )
+
+
+@app.post("/admin/set_hosted_model_config", response_model=HostedModelConfigResponse)
+async def admin_set_hosted_model_config(request: UpdateHostedModelConfigRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_current_user_matches(current_user, request.username)
+    _update_auth_session_last_seen(db, current_user)
+    _ensure_admin_user(current_user)
+
+    teacher_model = (request.teacher_model or request.main_model or "").strip()
+    verifier_model = (request.verifier_model or teacher_model).strip()
+    teacher_priority_enabled = request.teacher_priority_enabled
+    if request.main_priority_enabled is not None:
+        teacher_priority_enabled = request.main_priority_enabled
+
+    payload = set_hosted_models(
+        db,
+        teacher_model,
+        verifier_model,
+        request.fast_model,
+        teacher_priority_enabled=teacher_priority_enabled,
+        verifier_priority_enabled=request.verifier_priority_enabled,
+        fast_priority_enabled=request.fast_priority_enabled,
+        updated_by_player_id=current_user.id,
+    )
+    db.commit()
+    return HostedModelConfigResponse(
+        teacher_model=payload["teacher_model"],
+        verifier_model=payload["verifier_model"],
+        main_model=payload["main_model"],
+        fast_model=payload["fast_model"],
+        teacher_priority_enabled=payload.get("teacher_priority_enabled", False),
+        verifier_priority_enabled=payload.get("verifier_priority_enabled", False),
+        fast_priority_enabled=payload.get("fast_priority_enabled", False),
+        main_priority_enabled=payload.get("main_priority_enabled", payload.get("teacher_priority_enabled", False)),
+        teacher_provider=payload["teacher_provider"],
+        verifier_provider=payload["verifier_provider"],
+        main_provider=payload["main_provider"],
+        fast_provider=payload["fast_provider"],
+        teacher_display_name=payload.get("teacher_display_name"),
+        verifier_display_name=payload.get("verifier_display_name"),
+        main_display_name=payload.get("main_display_name"),
+        fast_display_name=payload.get("fast_display_name"),
+        catalog=[HostedModelOptionSummary(**entry) for entry in payload.get("catalog", [])],
+    )
 
 
 @app.post("/admin/revoke_access_grant", response_model=AccessGrantSummary)

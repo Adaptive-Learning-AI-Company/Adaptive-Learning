@@ -3,6 +3,7 @@ import operator
 import os
 import time
 from typing import TypedDict, List, Annotated, Union
+from fastapi import HTTPException
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage
 from langgraph.graph import StateGraph, END
@@ -10,7 +11,7 @@ from .prompts import TEACHER_PROMPT, TEACHER_OF_TEACHERS_PROMPT, PROBLEM_GENERAT
 from .database import log_interaction, get_db, Player, TopicProgress, SessionLocal
 from .knowledge_graph import get_graph, get_all_subjects_stats
 from .config import load_local_env
-from .billing import get_hosted_models
+from .billing import PRIORITY_SERVICE_TIER, get_hosted_model_selection, get_hosted_priority_selection, get_model_provider, model_supports_priority
 from .profile_security import decrypt_profile_secret
 from .student_tracking import mark_node_mastered, record_answer_evaluation, touch_current_node
 import json 
@@ -33,24 +34,78 @@ class AgentState(TypedDict):
     role: str # "Student" or "Teacher"
     view_as_student: bool
 
-DEFAULT_MAIN_MODEL, DEFAULT_FAST_MODEL = get_hosted_models()
-
-
 def _is_teacher_role(role: str | None) -> bool:
     normalized = (role or "").strip()
     return normalized in {"Teacher", "Admin"}
 
 
-def _build_llm(state: AgentState, model: str, allow_preferred_model: bool = False, **kwargs):
+def _hosted_teacher_model() -> str:
+    return get_hosted_model_selection()[0]
+
+
+def _hosted_verifier_model() -> str:
+    return get_hosted_model_selection()[1]
+
+
+def _hosted_fast_model() -> str:
+    return get_hosted_model_selection()[2]
+
+
+def _hosted_teacher_priority_enabled() -> bool:
+    return get_hosted_priority_selection()[0]
+
+
+def _hosted_verifier_priority_enabled() -> bool:
+    return get_hosted_priority_selection()[1]
+
+
+def _hosted_fast_priority_enabled() -> bool:
+    return get_hosted_priority_selection()[2]
+
+
+def _platform_api_key_for_model(model_name: str) -> str | None:
+    provider = get_model_provider(model_name)
+    if provider == "google":
+        return os.getenv("GOOGLE_API_KEY")
+    return os.getenv("OPENAI_API_KEY")
+
+
+def _build_llm(state: AgentState, model: str, allow_preferred_model: bool = False, priority_enabled: bool = False, **kwargs):
     username = state.get("username") if state else None
     api_key, resolved_model, billing_source = _resolve_llm_settings_for_user(
         username,
         requested_model=model,
         allow_preferred_model=allow_preferred_model,
     )
-    if api_key:
-        return ChatOpenAI(model=resolved_model, api_key=api_key, **kwargs), resolved_model, billing_source
-    return ChatOpenAI(model=resolved_model, **kwargs), resolved_model, billing_source
+    provider = get_model_provider(resolved_model)
+    model_kwargs = dict(kwargs)
+    service_tier = None
+    if priority_enabled and billing_source == "platform" and provider == "openai" and model_supports_priority(resolved_model):
+        service_tier = PRIORITY_SERVICE_TIER
+    if provider == "google":
+        try:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+        except ImportError as exc:
+            raise HTTPException(status_code=503, detail="Gemini support is not installed on the server.") from exc
+
+        if not api_key:
+            raise HTTPException(status_code=503, detail="GOOGLE_API_KEY is not configured on the server.")
+
+        gemini_response_mime = None
+        if "model_kwargs" in model_kwargs and isinstance(model_kwargs["model_kwargs"], dict):
+            response_format = model_kwargs["model_kwargs"].get("response_format", {})
+            if isinstance(response_format, dict) and response_format.get("type") == "json_object":
+                gemini_response_mime = "application/json"
+            model_kwargs.pop("model_kwargs", None)
+        if gemini_response_mime:
+            model_kwargs["response_mime_type"] = gemini_response_mime
+        return ChatGoogleGenerativeAI(model=resolved_model, google_api_key=api_key, **model_kwargs), resolved_model, billing_source, None
+
+    if not api_key:
+        raise HTTPException(status_code=503, detail="OPENAI_API_KEY is not configured on the server.")
+    if service_tier:
+        model_kwargs["service_tier"] = service_tier
+    return ChatOpenAI(model=resolved_model, api_key=api_key, **model_kwargs), resolved_model, billing_source, service_tier
 
 
 def _resolve_llm_settings_for_user(
@@ -60,23 +115,24 @@ def _resolve_llm_settings_for_user(
 ) -> tuple[str | None, str, str]:
     resolved_model = requested_model
     if not username:
-        return os.getenv("OPENAI_API_KEY"), resolved_model, "platform"
+        return _platform_api_key_for_model(resolved_model), resolved_model, "platform"
 
     db = SessionLocal()
     try:
         player = db.query(Player).filter(Player.username == username).first()
         if player:
-            if allow_preferred_model and player.preferred_model:
-                resolved_model = player.preferred_model
-
             if player.openai_api_key_encrypted:
+                if allow_preferred_model and player.preferred_model:
+                    preferred_candidate = player.preferred_model.strip()
+                    if preferred_candidate and get_model_provider(preferred_candidate) == "openai":
+                        resolved_model = preferred_candidate
                 decrypted = decrypt_profile_secret(player.openai_api_key_encrypted)
                 if decrypted:
                     return decrypted, resolved_model, "personal"
     finally:
         db.close()
 
-    return os.getenv("OPENAI_API_KEY"), resolved_model, "platform"
+    return _platform_api_key_for_model(resolved_model), resolved_model, "platform"
 
 
 def _subject_key_for_topic(topic_name: str | None) -> str:
@@ -175,7 +231,12 @@ def supervisor_node(state: AgentState):
         last_action=state.get('current_action', 'IDLE')
     )
     
-    decision_llm, _decision_model, _decision_billing_source = _build_llm(state, DEFAULT_FAST_MODEL, temperature=0)
+    decision_llm, _decision_model, _decision_billing_source, _decision_service_tier = _build_llm(
+        state,
+        _hosted_fast_model(),
+        priority_enabled=_hosted_fast_priority_enabled(),
+        temperature=0,
+    )
     response = decision_llm.invoke(prompt)
     decision = response.content.strip().upper()
     
@@ -345,10 +406,11 @@ def teacher_node(state: AgentState):
             print(f"[AGENTS] Replaced Role Trigger with Directive: {directive}")
         
     messages = [SystemMessage(content=prompt)] + context_msgs
-    teacher_llm, teacher_model_name, teacher_billing_source = _build_llm(
+    teacher_llm, teacher_model_name, teacher_billing_source, teacher_service_tier = _build_llm(
         state,
-        DEFAULT_MAIN_MODEL,
+        _hosted_teacher_model(),
         allow_preferred_model=True,
+        priority_enabled=_hosted_teacher_priority_enabled(),
     )
     start_time = time.perf_counter()
     response = teacher_llm.invoke(messages)
@@ -370,6 +432,7 @@ def teacher_node(state: AgentState):
         output_tokens=output_tokens,
         latency_ms=latency_ms,
         billing_source=teacher_billing_source,
+        service_tier=teacher_service_tier,
         event_type="teacher_explanation",
     )
     
@@ -470,10 +533,11 @@ def problem_node(state: AgentState):
     context_messages = state['messages'][-5:] 
     full_input = [SystemMessage(content=prompt)] + context_messages
     
-    problem_llm, problem_model_name, problem_billing_source = _build_llm(
+    problem_llm, problem_model_name, problem_billing_source, problem_service_tier = _build_llm(
         state,
-        DEFAULT_MAIN_MODEL,
+        _hosted_teacher_model(),
         allow_preferred_model=True,
+        priority_enabled=_hosted_teacher_priority_enabled(),
     )
     start_time = time.perf_counter()
     response = problem_llm.invoke(full_input)
@@ -495,6 +559,7 @@ def problem_node(state: AgentState):
         output_tokens=output_tokens,
         latency_ms=latency_ms,
         billing_source=problem_billing_source,
+        service_tier=problem_service_tier,
         event_type="problem_generated",
     )
     
@@ -514,10 +579,11 @@ def verifier_node(state: AgentState):
     prompt = VERIFIER_PROMPT.format(last_problem=problem_context, last_answer=last_answer)
     print(f"\n[AGENTS] VERIFIER NODE\nPROMPT:\n{prompt}\n")
     
-    verifier_llm, verifier_model_name, verifier_billing_source = _build_llm(
+    verifier_llm, verifier_model_name, verifier_billing_source, verifier_service_tier = _build_llm(
         state,
-        DEFAULT_MAIN_MODEL,
+        _hosted_verifier_model(),
         allow_preferred_model=True,
+        priority_enabled=_hosted_verifier_priority_enabled(),
         model_kwargs={"response_format": {"type": "json_object"}},
     )
     start_time = time.perf_counter()
@@ -543,6 +609,7 @@ def verifier_node(state: AgentState):
         output_tokens=output_tokens,
         latency_ms=latency_ms,
         billing_source=verifier_billing_source,
+        service_tier=verifier_service_tier,
         event_type="answer_evaluation",
         score_percent=score_percent,
         is_correct=is_correct,
@@ -588,10 +655,11 @@ def adapter_node(state: AgentState):
     print(f"\n[AGENTS] ADAPTER NODE\nPROMPT:\n{prompt}\n")
     
     # Force JSON output
-    adapter_llm, _adapter_model_name, _adapter_billing_source = _build_llm(
+    adapter_llm, _adapter_model_name, _adapter_billing_source, _adapter_service_tier = _build_llm(
         state,
-        DEFAULT_MAIN_MODEL,
+        _hosted_fast_model(),
         allow_preferred_model=True,
+        priority_enabled=_hosted_fast_priority_enabled(),
         model_kwargs={"response_format": {"type": "json_object"}},
     )
     response = adapter_llm.invoke([SystemMessage(content=prompt)])
@@ -706,10 +774,11 @@ def adapter_node(state: AgentState):
 
 def chat_node(state: AgentState):
     print(f"\n[AGENTS] GENERAL CHAT NODE\nMessages: {state['messages']}\n")
-    chat_llm, chat_model_name, chat_billing_source = _build_llm(
+    chat_llm, chat_model_name, chat_billing_source, chat_service_tier = _build_llm(
         state,
-        DEFAULT_MAIN_MODEL,
+        _hosted_teacher_model(),
         allow_preferred_model=True,
+        priority_enabled=_hosted_teacher_priority_enabled(),
     )
     start_time = time.perf_counter()
     response = chat_llm.invoke(state['messages'])
@@ -731,6 +800,7 @@ def chat_node(state: AgentState):
         output_tokens=output_tokens,
         latency_ms=latency_ms,
         billing_source=chat_billing_source,
+        service_tier=chat_service_tier,
         event_type="general_chat",
     )
     

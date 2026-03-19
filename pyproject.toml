@@ -8,6 +8,7 @@ dependencies = [
   "bcrypt==4.0.1",
   "fastapi",
   "langchain",
+  "langchain-google-genai>=2.0,<3",
   "langchain-openai",
   "langgraph",
   "networkx",

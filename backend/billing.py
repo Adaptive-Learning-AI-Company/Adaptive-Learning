@@ -6,6 +6,7 @@ from datetime import datetime
 import os
 
 from fastapi import HTTPException
+from sqlalchemy.exc import OperationalError
 
 from .access_grants import get_access_source_label, get_active_access_grant
 from .config import load_local_env, load_repo_json_file
@@ -16,6 +17,13 @@ STRIPE_PROVIDER = "stripe"
 PLAN_BYOK_MONTHLY = "byok_monthly"
 PLAN_HOSTED_MONTHLY = "hosted_monthly"
 BILLING_CONFIG_FILENAME = "billing_config.json"
+HOSTED_MAIN_MODEL_SETTING_KEY = "hosted_main_model"
+HOSTED_VERIFIER_MODEL_SETTING_KEY = "hosted_verifier_model"
+HOSTED_FAST_MODEL_SETTING_KEY = "hosted_fast_model"
+HOSTED_TEACHER_PRIORITY_SETTING_KEY = "hosted_teacher_priority_enabled"
+HOSTED_VERIFIER_PRIORITY_SETTING_KEY = "hosted_verifier_priority_enabled"
+HOSTED_FAST_PRIORITY_SETTING_KEY = "hosted_fast_priority_enabled"
+PRIORITY_SERVICE_TIER = "priority"
 
 
 @dataclass(frozen=True)
@@ -35,6 +43,65 @@ class PlanDefinition:
     hosted_main_model: str | None
     hosted_fast_model: str | None
     stripe_price_id: str | None
+
+
+def _default_model_catalog() -> list[dict]:
+    return [
+        {
+            "model_id": "gpt-5-mini",
+            "provider": "openai",
+            "display_name": "OpenAI GPT-5 mini",
+            "description": "Fast and low-cost GPT-5 tutoring model.",
+        },
+        {
+            "model_id": "gpt-5",
+            "provider": "openai",
+            "display_name": "OpenAI GPT-5",
+            "description": "Higher quality GPT-5 model with higher latency and cost.",
+        },
+        {
+            "model_id": "gpt-5.4-mini",
+            "provider": "openai",
+            "display_name": "OpenAI GPT-5.4 mini",
+            "description": "Stronger mini GPT-5.4 model for more capable tutoring.",
+        },
+        {
+            "model_id": "gpt-5.4",
+            "provider": "openai",
+            "display_name": "OpenAI GPT-5.4",
+            "description": "Most capable OpenAI model in this hosted catalog.",
+        },
+        {
+            "model_id": "gpt-4.1-mini",
+            "provider": "openai",
+            "display_name": "OpenAI GPT-4.1 mini",
+            "description": "Fast GPT-4.1 mini fallback with good instruction following.",
+        },
+        {
+            "model_id": "gpt-4.1",
+            "provider": "openai",
+            "display_name": "OpenAI GPT-4.1",
+            "description": "Stronger GPT-4.1 model with higher cost.",
+        },
+        {
+            "model_id": "gemini-2.5-flash-lite",
+            "provider": "google",
+            "display_name": "Gemini 2.5 Flash-Lite",
+            "description": "Lowest-cost Gemini option for high-speed tutoring experiments.",
+        },
+        {
+            "model_id": "gemini-2.5-flash",
+            "provider": "google",
+            "display_name": "Gemini 2.5 Flash",
+            "description": "Balanced Gemini model for low-latency tutoring.",
+        },
+        {
+            "model_id": "gemini-2.5-pro",
+            "provider": "google",
+            "display_name": "Gemini 2.5 Pro",
+            "description": "Highest-quality Gemini option in this catalog.",
+        },
+    ]
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -83,6 +150,11 @@ def _model_pricing_config() -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
+def _model_catalog_config() -> list[dict]:
+    payload = _billing_config().get("model_catalog", [])
+    return payload if isinstance(payload, list) else []
+
+
 def _config_int(name: str, default: int | None) -> int | None:
     return _env_int(name, default)
 
@@ -91,8 +163,146 @@ def _config_float(name: str, default: float | None) -> float | None:
     return _env_float(name, default)
 
 
+def _coerce_bool(value, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _billing_currency() -> str:
     return os.getenv("BILLING_CURRENCY", _billing_config().get("currency", "usd"))
+
+
+def _infer_model_provider(model_name: str | None, fallback: str | None = None) -> str:
+    normalized_fallback = (fallback or "").strip().lower()
+    if normalized_fallback in {"openai", "google"}:
+        return normalized_fallback
+    normalized_name = (model_name or "").strip().lower()
+    if normalized_name.startswith("gemini"):
+        return "google"
+    return "openai"
+
+
+def get_model_catalog() -> list[dict]:
+    configured_catalog = _model_catalog_config() or _default_model_catalog()
+    pricing_defaults = _model_pricing_config()
+    catalog: list[dict] = []
+    seen_model_ids: set[str] = set()
+
+    for raw_entry in configured_catalog:
+        if not isinstance(raw_entry, dict):
+            continue
+        model_id = str(raw_entry.get("model_id", raw_entry.get("id", ""))).strip()
+        if not model_id or model_id in seen_model_ids:
+            continue
+        seen_model_ids.add(model_id)
+
+        pricing = pricing_defaults.get(model_id, {}) if isinstance(pricing_defaults.get(model_id), dict) else {}
+        provider = _infer_model_provider(model_id, str(raw_entry.get("provider", "")).strip())
+        required_env_var = "GOOGLE_API_KEY" if provider == "google" else "OPENAI_API_KEY"
+        input_price = raw_entry.get("input_price_per_1m", pricing.get("input_price_per_1m"))
+        output_price = raw_entry.get("output_price_per_1m", pricing.get("output_price_per_1m"))
+        priority_input_price = raw_entry.get("priority_input_price_per_1m", pricing.get("priority_input_price_per_1m"))
+        priority_output_price = raw_entry.get("priority_output_price_per_1m", pricing.get("priority_output_price_per_1m"))
+        supports_priority_raw = raw_entry.get("supports_priority")
+        supports_priority = (
+            _coerce_bool(supports_priority_raw, False)
+            if supports_priority_raw is not None
+            else provider == "openai" and priority_input_price is not None and priority_output_price is not None
+        )
+
+        catalog.append(
+            {
+                "model_id": model_id,
+                "provider": provider,
+                "display_name": str(raw_entry.get("display_name", model_id)).strip() or model_id,
+                "description": str(raw_entry.get("description", "")).strip() or None,
+                "input_price_per_1m": input_price,
+                "output_price_per_1m": output_price,
+                "priority_input_price_per_1m": priority_input_price,
+                "priority_output_price_per_1m": priority_output_price,
+                "supports_priority": supports_priority,
+                "required_env_var": required_env_var,
+                "is_available": bool(os.getenv(required_env_var)),
+            }
+        )
+
+    return catalog
+
+
+def get_model_catalog_entry(model_name: str | None) -> dict | None:
+    normalized = (model_name or "").strip()
+    if not normalized:
+        return None
+    for entry in get_model_catalog():
+        if entry.get("model_id") == normalized:
+            return entry
+    return None
+
+
+def get_model_provider(model_name: str | None) -> str:
+    entry = get_model_catalog_entry(model_name)
+    if entry:
+        return str(entry.get("provider", "openai"))
+    return _infer_model_provider(model_name)
+
+
+def get_model_required_env_var(model_name: str | None) -> str:
+    return "GOOGLE_API_KEY" if get_model_provider(model_name) == "google" else "OPENAI_API_KEY"
+
+
+def model_supports_priority(model_name: str | None) -> bool:
+    entry = get_model_catalog_entry(model_name)
+    return bool(entry and entry.get("supports_priority", False))
+
+
+def _default_hosted_model_selection() -> tuple[str, str, str]:
+    hosted_plan = _plan_config(PLAN_HOSTED_MONTHLY)
+    default_teacher = os.getenv(
+        "OPENAI_MODEL",
+        hosted_plan.get("hosted_teacher_model", hosted_plan.get("hosted_main_model", "gpt-5-mini")),
+    )
+    default_verifier = os.getenv(
+        "OPENAI_VERIFIER_MODEL",
+        hosted_plan.get("hosted_verifier_model", default_teacher),
+    )
+    default_fast = os.getenv("OPENAI_FAST_MODEL", hosted_plan.get("hosted_fast_model", default_teacher))
+    return default_teacher, default_verifier, default_fast
+
+
+def _default_hosted_priority_selection() -> tuple[bool, bool, bool]:
+    teacher_model, verifier_model, fast_model = _default_hosted_model_selection()
+    default_teacher = _env_bool("OPENAI_MODEL_PRIORITY", False) and model_supports_priority(teacher_model)
+    default_verifier = _env_bool("OPENAI_VERIFIER_MODEL_PRIORITY", False) and model_supports_priority(verifier_model)
+    default_fast = _env_bool("OPENAI_FAST_MODEL_PRIORITY", False) and model_supports_priority(fast_model)
+    return default_teacher, default_verifier, default_fast
+
+
+def _coerce_catalog_model(model_name: str | None, fallback: str) -> str:
+    normalized = (model_name or "").strip()
+    return normalized if get_model_catalog_entry(normalized) else fallback
+
+
+def _get_app_setting_value(db, key: str) -> str | None:
+    from .database import AppSetting
+
+    try:
+        setting = db.query(AppSetting).filter(AppSetting.key == key).first()
+    except OperationalError:
+        return None
+    if setting is None:
+        return None
+    value = (setting.value_text or "").strip()
+    return value or None
+
+
+def _get_app_setting_bool(db, key: str, default: bool) -> bool:
+    value = _get_app_setting_value(db, key)
+    return _coerce_bool(value, default)
 
 
 def _month_window(now: datetime) -> tuple[datetime, datetime]:
@@ -111,16 +321,160 @@ def _stripe_timestamp_to_datetime(value) -> datetime | None:
         return None
 
 
-def get_hosted_models() -> tuple[str, str]:
-    hosted_plan = _plan_config(PLAN_HOSTED_MONTHLY)
-    default_main = hosted_plan.get("hosted_main_model", "gpt-5-mini")
-    main_model = os.getenv("OPENAI_MODEL", default_main)
-    fast_model = os.getenv("OPENAI_FAST_MODEL", hosted_plan.get("hosted_fast_model", main_model))
-    return main_model, fast_model
+def get_hosted_model_selection(db=None) -> tuple[str, str, str]:
+    default_teacher, default_verifier, default_fast = _default_hosted_model_selection()
+    owns_session = db is None
+
+    if db is None:
+        from .database import SessionLocal
+
+        db = SessionLocal()
+
+    try:
+        selected_teacher = _get_app_setting_value(db, HOSTED_MAIN_MODEL_SETTING_KEY)
+        selected_verifier = _get_app_setting_value(db, HOSTED_VERIFIER_MODEL_SETTING_KEY)
+        selected_fast = _get_app_setting_value(db, HOSTED_FAST_MODEL_SETTING_KEY)
+    finally:
+        if owns_session and db is not None:
+            db.close()
+
+    teacher_model = _coerce_catalog_model(selected_teacher, default_teacher)
+    verifier_model = _coerce_catalog_model(selected_verifier, default_verifier or teacher_model)
+    fast_model = _coerce_catalog_model(selected_fast, default_fast)
+    return teacher_model, verifier_model, fast_model
+
+
+def get_hosted_priority_selection(db=None) -> tuple[bool, bool, bool]:
+    default_teacher, default_verifier, default_fast = _default_hosted_priority_selection()
+    teacher_model, verifier_model, fast_model = get_hosted_model_selection(db)
+    owns_session = db is None
+
+    if db is None:
+        from .database import SessionLocal
+
+        db = SessionLocal()
+
+    try:
+        selected_teacher = _get_app_setting_bool(db, HOSTED_TEACHER_PRIORITY_SETTING_KEY, default_teacher)
+        selected_verifier = _get_app_setting_bool(db, HOSTED_VERIFIER_PRIORITY_SETTING_KEY, default_verifier)
+        selected_fast = _get_app_setting_bool(db, HOSTED_FAST_PRIORITY_SETTING_KEY, default_fast)
+    finally:
+        if owns_session and db is not None:
+            db.close()
+
+    return (
+        bool(selected_teacher and model_supports_priority(teacher_model)),
+        bool(selected_verifier and model_supports_priority(verifier_model)),
+        bool(selected_fast and model_supports_priority(fast_model)),
+    )
+
+
+def get_hosted_models(db=None) -> tuple[str, str]:
+    teacher_model, _verifier_model, fast_model = get_hosted_model_selection(db)
+    return teacher_model, fast_model
+
+
+def build_hosted_model_config(db) -> dict:
+    teacher_model, verifier_model, fast_model = get_hosted_model_selection(db)
+    teacher_priority_enabled, verifier_priority_enabled, fast_priority_enabled = get_hosted_priority_selection(db)
+    teacher_entry = get_model_catalog_entry(teacher_model) or {}
+    verifier_entry = get_model_catalog_entry(verifier_model) or {}
+    fast_entry = get_model_catalog_entry(fast_model) or {}
+
+    return {
+        "teacher_model": teacher_model,
+        "verifier_model": verifier_model,
+        "fast_model": fast_model,
+        "teacher_provider": get_model_provider(teacher_model),
+        "verifier_provider": get_model_provider(verifier_model),
+        "fast_provider": get_model_provider(fast_model),
+        "teacher_display_name": teacher_entry.get("display_name", teacher_model),
+        "verifier_display_name": verifier_entry.get("display_name", verifier_model),
+        "fast_display_name": fast_entry.get("display_name", fast_model),
+        "teacher_priority_enabled": teacher_priority_enabled,
+        "verifier_priority_enabled": verifier_priority_enabled,
+        "fast_priority_enabled": fast_priority_enabled,
+        "main_model": teacher_model,
+        "main_provider": get_model_provider(teacher_model),
+        "main_display_name": teacher_entry.get("display_name", teacher_model),
+        "main_priority_enabled": teacher_priority_enabled,
+        "catalog": get_model_catalog(),
+    }
+
+
+def set_hosted_models(
+    db,
+    teacher_model: str,
+    verifier_model: str,
+    fast_model: str,
+    teacher_priority_enabled: bool = False,
+    verifier_priority_enabled: bool = False,
+    fast_priority_enabled: bool = False,
+    updated_by_player_id: int | None = None,
+) -> dict:
+    from .database import AppSetting
+
+    normalized_teacher = (teacher_model or "").strip()
+    normalized_verifier = (verifier_model or normalized_teacher).strip()
+    normalized_fast = (fast_model or "").strip()
+    normalized_teacher_priority = bool(teacher_priority_enabled)
+    normalized_verifier_priority = bool(verifier_priority_enabled)
+    normalized_fast_priority = bool(fast_priority_enabled)
+    if not get_model_catalog_entry(normalized_teacher):
+        raise HTTPException(status_code=400, detail="Unsupported hosted teacher model.")
+    if not get_model_catalog_entry(normalized_verifier):
+        raise HTTPException(status_code=400, detail="Unsupported hosted verifier model.")
+    if not get_model_catalog_entry(normalized_fast):
+        raise HTTPException(status_code=400, detail="Unsupported hosted fast model.")
+
+    missing_envs = []
+    for model_name in {normalized_teacher, normalized_verifier, normalized_fast}:
+        required_env_var = get_model_required_env_var(model_name)
+        if not os.getenv(required_env_var):
+            missing_envs.append(required_env_var)
+    if missing_envs:
+        unique_missing = ", ".join(sorted(set(missing_envs)))
+        raise HTTPException(status_code=400, detail=f"Missing required environment variables for selected models: {unique_missing}")
+
+    priority_checks = (
+        ("teacher", normalized_teacher, normalized_teacher_priority),
+        ("verifier", normalized_verifier, normalized_verifier_priority),
+        ("fast", normalized_fast, normalized_fast_priority),
+    )
+    for label, model_name, enabled in priority_checks:
+        if enabled and not model_supports_priority(model_name):
+            raise HTTPException(status_code=400, detail=f"Priority processing is not supported for the selected {label} model.")
+
+    now = datetime.utcnow()
+    for key, value in (
+        (HOSTED_MAIN_MODEL_SETTING_KEY, normalized_teacher),
+        (HOSTED_VERIFIER_MODEL_SETTING_KEY, normalized_verifier),
+        (HOSTED_FAST_MODEL_SETTING_KEY, normalized_fast),
+        (HOSTED_TEACHER_PRIORITY_SETTING_KEY, "true" if normalized_teacher_priority else "false"),
+        (HOSTED_VERIFIER_PRIORITY_SETTING_KEY, "true" if normalized_verifier_priority else "false"),
+        (HOSTED_FAST_PRIORITY_SETTING_KEY, "true" if normalized_fast_priority else "false"),
+    ):
+        setting = db.query(AppSetting).filter(AppSetting.key == key).first()
+        if setting is None:
+            setting = AppSetting(
+                key=key,
+                value_text=value,
+                updated_by_player_id=updated_by_player_id,
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(setting)
+        else:
+            setting.value_text = value
+            setting.updated_by_player_id = updated_by_player_id
+            setting.updated_at = now
+
+    db.flush()
+    return build_hosted_model_config(db)
 
 
 def get_plan_definitions() -> list[PlanDefinition]:
-    hosted_main_model, hosted_fast_model = get_hosted_models()
+    hosted_teacher_model, _hosted_verifier_model, hosted_fast_model = get_hosted_model_selection()
     byok_config = _plan_config(PLAN_BYOK_MONTHLY)
     hosted_config = _plan_config(PLAN_HOSTED_MONTHLY)
     return [
@@ -154,7 +508,7 @@ def get_plan_definitions() -> list[PlanDefinition]:
             monthly_input_token_cap=_config_int("PLAN_HOSTED_MONTHLY_INPUT_TOKEN_CAP", hosted_config.get("monthly_input_token_cap", 5_000_000)),
             monthly_output_token_cap=_config_int("PLAN_HOSTED_MONTHLY_OUTPUT_TOKEN_CAP", hosted_config.get("monthly_output_token_cap", 750_000)),
             monthly_cost_cap_cents=_config_int("PLAN_HOSTED_MONTHLY_COST_CAP_CENTS", hosted_config.get("monthly_cost_cap_cents", 250)),
-            hosted_main_model=hosted_main_model,
+            hosted_main_model=hosted_teacher_model,
             hosted_fast_model=hosted_fast_model,
             stripe_price_id=os.getenv("STRIPE_PRICE_ID_HOSTED_MONTHLY"),
         ),
@@ -410,6 +764,7 @@ def record_interaction_usage(
     input_tokens: int | None,
     output_tokens: int | None,
     billing_source: str | None,
+    service_tier: str | None = None,
 ) -> int | None:
     from .database import Player
 
@@ -420,7 +775,7 @@ def record_interaction_usage(
     if not player:
         return None
 
-    estimated_cost_cents = estimate_model_cost_cents(model_name, input_tokens, output_tokens)
+    estimated_cost_cents = estimate_model_cost_cents(model_name, input_tokens, output_tokens, service_tier=service_tier)
     state = get_billing_state(db, player)
     usage_cycle = state.get("usage_cycle")
     if usage_cycle:
@@ -432,36 +787,61 @@ def record_interaction_usage(
     return estimated_cost_cents
 
 
-def estimate_model_cost_cents(model_name: str | None, input_tokens: int | None, output_tokens: int | None) -> int | None:
+def estimate_model_cost_cents(
+    model_name: str | None,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    service_tier: str | None = None,
+) -> int | None:
     if not model_name:
         return None
 
-    hosted_main_model, hosted_fast_model = get_hosted_models()
+    hosted_teacher_model, hosted_verifier_model, hosted_fast_model = get_hosted_model_selection()
     pricing_defaults = _model_pricing_config()
-    main_defaults = pricing_defaults.get(hosted_main_model, {})
+    teacher_defaults = pricing_defaults.get(hosted_teacher_model, {})
+    verifier_defaults = pricing_defaults.get(hosted_verifier_model, {})
     fast_defaults = pricing_defaults.get(hosted_fast_model, {})
     pricing_map = {
-        hosted_main_model: (
-            _config_float("OPENAI_MODEL_INPUT_PRICE_PER_1M", main_defaults.get("input_price_per_1m", 0.25)),
-            _config_float("OPENAI_MODEL_OUTPUT_PRICE_PER_1M", main_defaults.get("output_price_per_1m", 2.0)),
-        ),
-        hosted_fast_model: (
-            _config_float("OPENAI_FAST_MODEL_INPUT_PRICE_PER_1M", fast_defaults.get("input_price_per_1m", 0.25)),
-            _config_float("OPENAI_FAST_MODEL_OUTPUT_PRICE_PER_1M", fast_defaults.get("output_price_per_1m", 2.0)),
-        ),
+        hosted_teacher_model: {
+            "input_price_per_1m": _config_float("OPENAI_MODEL_INPUT_PRICE_PER_1M", teacher_defaults.get("input_price_per_1m", 0.25)),
+            "output_price_per_1m": _config_float("OPENAI_MODEL_OUTPUT_PRICE_PER_1M", teacher_defaults.get("output_price_per_1m", 2.0)),
+            "priority_input_price_per_1m": _config_float("OPENAI_MODEL_PRIORITY_INPUT_PRICE_PER_1M", teacher_defaults.get("priority_input_price_per_1m")),
+            "priority_output_price_per_1m": _config_float("OPENAI_MODEL_PRIORITY_OUTPUT_PRICE_PER_1M", teacher_defaults.get("priority_output_price_per_1m")),
+        },
+        hosted_verifier_model: {
+            "input_price_per_1m": _config_float("OPENAI_VERIFIER_MODEL_INPUT_PRICE_PER_1M", verifier_defaults.get("input_price_per_1m", 0.25)),
+            "output_price_per_1m": _config_float("OPENAI_VERIFIER_MODEL_OUTPUT_PRICE_PER_1M", verifier_defaults.get("output_price_per_1m", 2.0)),
+            "priority_input_price_per_1m": _config_float("OPENAI_VERIFIER_MODEL_PRIORITY_INPUT_PRICE_PER_1M", verifier_defaults.get("priority_input_price_per_1m")),
+            "priority_output_price_per_1m": _config_float("OPENAI_VERIFIER_MODEL_PRIORITY_OUTPUT_PRICE_PER_1M", verifier_defaults.get("priority_output_price_per_1m")),
+        },
+        hosted_fast_model: {
+            "input_price_per_1m": _config_float("OPENAI_FAST_MODEL_INPUT_PRICE_PER_1M", fast_defaults.get("input_price_per_1m", 0.25)),
+            "output_price_per_1m": _config_float("OPENAI_FAST_MODEL_OUTPUT_PRICE_PER_1M", fast_defaults.get("output_price_per_1m", 2.0)),
+            "priority_input_price_per_1m": _config_float("OPENAI_FAST_MODEL_PRIORITY_INPUT_PRICE_PER_1M", fast_defaults.get("priority_input_price_per_1m")),
+            "priority_output_price_per_1m": _config_float("OPENAI_FAST_MODEL_PRIORITY_OUTPUT_PRICE_PER_1M", fast_defaults.get("priority_output_price_per_1m")),
+        },
     }
     for configured_model, configured_prices in pricing_defaults.items():
         if configured_model in pricing_map or not isinstance(configured_prices, dict):
             continue
-        pricing_map[configured_model] = (
-            configured_prices.get("input_price_per_1m"),
-            configured_prices.get("output_price_per_1m"),
-        )
+        pricing_map[configured_model] = {
+            "input_price_per_1m": configured_prices.get("input_price_per_1m"),
+            "output_price_per_1m": configured_prices.get("output_price_per_1m"),
+            "priority_input_price_per_1m": configured_prices.get("priority_input_price_per_1m"),
+            "priority_output_price_per_1m": configured_prices.get("priority_output_price_per_1m"),
+        }
     pricing = pricing_map.get(model_name)
     if pricing is None:
         return None
 
-    input_price, output_price = pricing
+    input_price = pricing.get("input_price_per_1m")
+    output_price = pricing.get("output_price_per_1m")
+    if service_tier == PRIORITY_SERVICE_TIER:
+        priority_input_price = pricing.get("priority_input_price_per_1m")
+        priority_output_price = pricing.get("priority_output_price_per_1m")
+        if priority_input_price is not None and priority_output_price is not None:
+            input_price = priority_input_price
+            output_price = priority_output_price
     if input_price is None or output_price is None:
         return None
 
@@ -529,6 +909,7 @@ def build_billing_status(db, player) -> dict:
     from .database import SubscriptionPlan
 
     state = get_billing_state(db, player)
+    hosted_teacher_model, hosted_verifier_model, hosted_fast_model = get_hosted_model_selection(db)
     subscription = state["subscription"]
     plan = state["plan"]
     usage_cycle = state["usage_cycle"]
@@ -566,7 +947,9 @@ def build_billing_status(db, player) -> dict:
         "plans": [_serialize_plan(plan_row, state["recommended_plan_code"]) for plan_row in plan_rows],
         "access_allowed": state["allowed"],
         "access_reason": state["reason"],
-        "active_hosted_model": plan.hosted_main_model if plan else None,
+        "active_hosted_model": hosted_teacher_model,
+        "active_verifier_model": hosted_verifier_model,
+        "active_fast_model": hosted_fast_model,
     }
 
 

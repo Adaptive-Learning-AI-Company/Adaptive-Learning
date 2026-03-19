@@ -275,6 +275,56 @@ class TeacherStudentProgressResponse(BaseModel):
     recent_sessions: List[StudentActivitySessionSummary] = Field(default_factory=list)
 
 
+class HostedModelConfigRequest(BaseModel):
+    username: str
+
+
+class UpdateHostedModelConfigRequest(BaseModel):
+    username: str
+    teacher_model: Optional[str] = None
+    verifier_model: Optional[str] = None
+    main_model: Optional[str] = None
+    teacher_priority_enabled: bool = False
+    verifier_priority_enabled: bool = False
+    main_priority_enabled: Optional[bool] = None
+    fast_priority_enabled: bool = False
+    fast_model: str
+
+
+class HostedModelOptionSummary(BaseModel):
+    model_id: str
+    provider: str
+    display_name: str
+    description: Optional[str] = None
+    input_price_per_1m: Optional[float] = None
+    output_price_per_1m: Optional[float] = None
+    priority_input_price_per_1m: Optional[float] = None
+    priority_output_price_per_1m: Optional[float] = None
+    supports_priority: bool = False
+    required_env_var: Optional[str] = None
+    is_available: bool = False
+
+
+class HostedModelConfigResponse(BaseModel):
+    teacher_model: str
+    verifier_model: str
+    fast_model: str
+    teacher_priority_enabled: bool = False
+    verifier_priority_enabled: bool = False
+    fast_priority_enabled: bool = False
+    teacher_provider: str
+    verifier_provider: str
+    fast_provider: str
+    teacher_display_name: Optional[str] = None
+    verifier_display_name: Optional[str] = None
+    fast_display_name: Optional[str] = None
+    main_model: str
+    main_priority_enabled: bool = False
+    main_provider: str
+    main_display_name: Optional[str] = None
+    catalog: List[HostedModelOptionSummary] = Field(default_factory=list)
+
+
 class BillingStatusRequest(BaseModel):
     username: str
 
@@ -338,6 +388,8 @@ class BillingStatusResponse(BaseModel):
     access_allowed: bool = True
     access_reason: Optional[str] = None
     active_hosted_model: Optional[str] = None
+    active_verifier_model: Optional[str] = None
+    active_fast_model: Optional[str] = None
 
 
 class BillingCheckoutResponse(BaseModel):

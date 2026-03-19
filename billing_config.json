@@ -10,7 +10,7 @@
     },
     "hosted_monthly": {
       "display_name": "Hosted AI Tutor",
-      "description": "Adaptive Tutor includes OpenAI usage with GPT-5 mini and built-in monthly caps.",
+      "description": "Adaptive Tutor includes hosted AI usage with built-in monthly caps. Administrators can choose the active hosted model mix.",
       "monthly_price_cents": 499,
       "includes_hosted_usage": true,
       "requires_personal_key": false,
@@ -19,14 +19,114 @@
       "monthly_input_token_cap": 5000000,
       "monthly_output_token_cap": 750000,
       "monthly_cost_cap_cents": 250,
+      "hosted_teacher_model": "gpt-5-mini",
+      "hosted_verifier_model": "gpt-5-mini",
       "hosted_main_model": "gpt-5-mini",
       "hosted_fast_model": "gpt-5-mini"
     }
   },
+  "model_catalog": [
+    {
+      "model_id": "gpt-5-mini",
+      "provider": "openai",
+      "display_name": "OpenAI GPT-5 mini",
+      "description": "Fast and low-cost GPT-5 tutoring model."
+    },
+    {
+      "model_id": "gpt-5",
+      "provider": "openai",
+      "display_name": "OpenAI GPT-5",
+      "description": "Higher quality GPT-5 model with higher latency and cost."
+    },
+    {
+      "model_id": "gpt-5.4-mini",
+      "provider": "openai",
+      "display_name": "OpenAI GPT-5.4 mini",
+      "description": "Stronger mini GPT-5.4 model for more capable tutoring."
+    },
+    {
+      "model_id": "gpt-5.4",
+      "provider": "openai",
+      "display_name": "OpenAI GPT-5.4",
+      "description": "Most capable OpenAI model in this hosted catalog."
+    },
+    {
+      "model_id": "gpt-4.1-mini",
+      "provider": "openai",
+      "display_name": "OpenAI GPT-4.1 mini",
+      "description": "Fast GPT-4.1 mini fallback with good instruction following."
+    },
+    {
+      "model_id": "gpt-4.1",
+      "provider": "openai",
+      "display_name": "OpenAI GPT-4.1",
+      "description": "Stronger GPT-4.1 model with higher cost."
+    },
+    {
+      "model_id": "gemini-2.5-flash-lite",
+      "provider": "google",
+      "display_name": "Gemini 2.5 Flash-Lite",
+      "description": "Lowest-cost Gemini option for high-speed tutoring experiments."
+    },
+    {
+      "model_id": "gemini-2.5-flash",
+      "provider": "google",
+      "display_name": "Gemini 2.5 Flash",
+      "description": "Balanced Gemini model for low-latency tutoring."
+    },
+    {
+      "model_id": "gemini-2.5-pro",
+      "provider": "google",
+      "display_name": "Gemini 2.5 Pro",
+      "description": "Highest-quality Gemini option in this catalog."
+    }
+  ],
   "model_pricing": {
     "gpt-5-mini": {
       "input_price_per_1m": 0.25,
-      "output_price_per_1m": 2.0
+      "output_price_per_1m": 2.0,
+      "priority_input_price_per_1m": 0.45,
+      "priority_output_price_per_1m": 3.6
+    },
+    "gpt-5": {
+      "input_price_per_1m": 1.25,
+      "output_price_per_1m": 10.0,
+      "priority_input_price_per_1m": 2.5,
+      "priority_output_price_per_1m": 20.0
+    },
+    "gpt-5.4-mini": {
+      "input_price_per_1m": 0.75,
+      "output_price_per_1m": 4.5
+    },
+    "gpt-5.4": {
+      "input_price_per_1m": 2.5,
+      "output_price_per_1m": 15.0,
+      "priority_input_price_per_1m": 5.0,
+      "priority_output_price_per_1m": 30.0
+    },
+    "gpt-4.1-mini": {
+      "input_price_per_1m": 0.4,
+      "output_price_per_1m": 1.6,
+      "priority_input_price_per_1m": 0.7,
+      "priority_output_price_per_1m": 2.8
+    },
+    "gpt-4.1": {
+      "input_price_per_1m": 2.0,
+      "output_price_per_1m": 8.0,
+      "priority_input_price_per_1m": 3.5,
+      "priority_output_price_per_1m": 14.0
+    },
+    "gemini-2.5-flash-lite": {
+      "input_price_per_1m": 0.1,
+      "output_price_per_1m": 0.4
+    },
+    "gemini-2.5-flash": {
+      "input_price_per_1m": 0.3,
+      "output_price_per_1m": 2.5
+    },
+    "gemini-2.5-pro": {
+      "input_price_per_1m": 1.25,
+      "output_price_per_1m": 10.0
     }
   }
 }

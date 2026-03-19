@@ -97,6 +97,13 @@ var admin_access_button: Button
 var teacher_dashboard_button: Button
 var admin_status_label: Label
 var admin_revoke_reason_input: LineEdit
+var admin_model_main_option: OptionButton
+var admin_model_verifier_option: OptionButton
+var admin_model_fast_option: OptionButton
+var admin_model_main_priority_check: CheckBox
+var admin_model_verifier_priority_check: CheckBox
+var admin_model_fast_priority_check: CheckBox
+var admin_model_status_label: Label
 var admin_code_assigned_input: LineEdit
 var admin_code_plan_option: OptionButton
 var admin_code_days_input: LineEdit
@@ -111,6 +118,7 @@ var admin_grant_notes_input: LineEdit
 var admin_filter_username_input: LineEdit
 var admin_code_list: ItemList
 var admin_grant_list: ItemList
+var admin_model_catalog_entries := []
 var admin_code_entries := []
 var admin_grant_entries := []
 var teacher_link_entries := []
@@ -784,6 +792,163 @@ func _admin_selected_plan_code(option: OptionButton) -> String:
 	return "byok_monthly" if option and option.selected == 1 else "hosted_monthly"
 
 
+func _format_admin_model_option_label(entry: Dictionary) -> String:
+	var provider = str(entry.get("provider", "openai")).capitalize()
+	var display_name = str(entry.get("display_name", entry.get("model_id", "model")))
+	var input_price = entry.get("input_price_per_1m", null)
+	var output_price = entry.get("output_price_per_1m", null)
+	var label = "[" + provider + "] " + display_name
+	if input_price != null and output_price != null:
+		label += " ($" + str(input_price) + " / $" + str(output_price) + ")"
+	if not bool(entry.get("is_available", false)):
+		label += " [" + str(entry.get("required_env_var", "missing env")) + " required]"
+	return label
+
+
+func _populate_admin_model_option(option: OptionButton, selected_model: String):
+	if option == null:
+		return
+	option.clear()
+	var selected_index = -1
+	for entry in admin_model_catalog_entries:
+		var model_id = str(entry.get("model_id", "")).strip_edges()
+		if model_id == "":
+			continue
+		option.add_item(_format_admin_model_option_label(entry))
+		var index = option.item_count - 1
+		option.set_item_metadata(index, model_id)
+		option.set_item_tooltip(index, str(entry.get("description", "")))
+		if model_id == selected_model:
+			selected_index = index
+	if selected_index >= 0:
+		option.select(selected_index)
+	elif option.item_count > 0:
+		option.select(0)
+
+
+func _admin_selected_model_id(option: OptionButton) -> String:
+	if option == null or option.item_count == 0 or option.selected < 0:
+		return ""
+	return str(option.get_item_metadata(option.selected))
+
+
+func _admin_bool_value(value) -> bool:
+	match typeof(value):
+		TYPE_BOOL:
+			return value
+		TYPE_INT, TYPE_FLOAT:
+			return value != 0
+		TYPE_STRING:
+			return str(value).strip_edges().to_lower() in ["1", "true", "yes", "on"]
+		_:
+			return false
+
+
+func _admin_model_entry_by_id(model_id: String) -> Dictionary:
+	for entry in admin_model_catalog_entries:
+		if str(entry.get("model_id", "")).strip_edges() == model_id:
+			return entry
+	return {}
+
+
+func _admin_model_supports_priority(model_id: String) -> bool:
+	return _admin_bool_value(_admin_model_entry_by_id(model_id).get("supports_priority", false))
+
+
+func _refresh_admin_priority_checkbox(option: OptionButton, checkbox: CheckBox):
+	if checkbox == null:
+		return
+	var model_id = _admin_selected_model_id(option)
+	var supports_priority = _admin_model_supports_priority(model_id)
+	checkbox.text = "Enable Priority"
+	if supports_priority:
+		checkbox.disabled = false
+		checkbox.tooltip_text = "Use OpenAI Priority processing for lower latency at higher per-token cost."
+	else:
+		checkbox.button_pressed = false
+		checkbox.disabled = true
+		checkbox.tooltip_text = "Priority processing is only available on supported OpenAI models."
+
+
+func _refresh_admin_priority_controls():
+	_refresh_admin_priority_checkbox(admin_model_main_option, admin_model_main_priority_check)
+	_refresh_admin_priority_checkbox(admin_model_verifier_option, admin_model_verifier_priority_check)
+	_refresh_admin_priority_checkbox(admin_model_fast_option, admin_model_fast_priority_check)
+
+
+func _priority_status_suffix(checkbox: CheckBox) -> String:
+	if checkbox != null and not checkbox.disabled and checkbox.button_pressed:
+		return " (Priority)"
+	return " (Standard)"
+
+
+func _load_admin_hosted_model_config():
+	if not _is_admin_user():
+		return
+	if admin_model_status_label:
+		admin_model_status_label.text = "Loading hosted model catalog..."
+	var payload = {"username": GameManager.player_username}
+	NetworkManager.post_request("/admin/get_hosted_model_config", payload, _on_admin_hosted_model_config_loaded, func(_code, err):
+		if admin_model_status_label:
+			admin_model_status_label.text = err if err != "" else "Unable to load hosted model settings."
+	)
+
+
+func _on_admin_hosted_model_config_loaded(_code, response):
+	admin_model_catalog_entries = response.get("catalog", [])
+	var teacher_model = str(response.get("teacher_model", response.get("main_model", "")))
+	var verifier_model = str(response.get("verifier_model", teacher_model))
+	var fast_model = str(response.get("fast_model", ""))
+	_populate_admin_model_option(admin_model_main_option, teacher_model)
+	_populate_admin_model_option(admin_model_verifier_option, verifier_model)
+	_populate_admin_model_option(admin_model_fast_option, fast_model)
+	if admin_model_main_priority_check:
+		admin_model_main_priority_check.button_pressed = _admin_bool_value(response.get("teacher_priority_enabled", response.get("main_priority_enabled", false)))
+	if admin_model_verifier_priority_check:
+		admin_model_verifier_priority_check.button_pressed = _admin_bool_value(response.get("verifier_priority_enabled", false))
+	if admin_model_fast_priority_check:
+		admin_model_fast_priority_check.button_pressed = _admin_bool_value(response.get("fast_priority_enabled", false))
+	_refresh_admin_priority_controls()
+	if admin_model_status_label:
+		var teacher_display = str(response.get("teacher_display_name", response.get("main_display_name", teacher_model)))
+		var verifier_display = str(response.get("verifier_display_name", verifier_model))
+		var fast_display = str(response.get("fast_display_name", fast_model))
+		admin_model_status_label.text = "Current hosted models: Teacher = " + teacher_display + _priority_status_suffix(admin_model_main_priority_check) + " | Verifier = " + verifier_display + _priority_status_suffix(admin_model_verifier_priority_check) + " | Fast = " + fast_display + _priority_status_suffix(admin_model_fast_priority_check)
+
+
+func _save_admin_hosted_model_config():
+	if not _is_admin_user():
+		return
+	var teacher_model = _admin_selected_model_id(admin_model_main_option)
+	var verifier_model = _admin_selected_model_id(admin_model_verifier_option)
+	var fast_model = _admin_selected_model_id(admin_model_fast_option)
+	_refresh_admin_priority_controls()
+	if teacher_model == "" or verifier_model == "" or fast_model == "":
+		if admin_model_status_label:
+			admin_model_status_label.text = "Select a teacher model, verifier model, and fast model."
+		return
+	if admin_model_status_label:
+		admin_model_status_label.text = "Saving hosted model selection..."
+	var payload = {
+		"username": GameManager.player_username,
+		"teacher_model": teacher_model,
+		"verifier_model": verifier_model,
+		"fast_model": fast_model,
+		"teacher_priority_enabled": admin_model_main_priority_check != null and not admin_model_main_priority_check.disabled and admin_model_main_priority_check.button_pressed,
+		"verifier_priority_enabled": admin_model_verifier_priority_check != null and not admin_model_verifier_priority_check.disabled and admin_model_verifier_priority_check.button_pressed,
+		"fast_priority_enabled": admin_model_fast_priority_check != null and not admin_model_fast_priority_check.disabled and admin_model_fast_priority_check.button_pressed
+	}
+	NetworkManager.post_request("/admin/set_hosted_model_config", payload, func(_code, response):
+		_on_admin_hosted_model_config_loaded(_code, response)
+		if admin_model_status_label:
+			admin_model_status_label.text += " Saved."
+		_fetch_billing_status()
+	, func(_code, err):
+		if admin_model_status_label:
+			admin_model_status_label.text = err if err != "" else "Unable to save hosted model settings."
+	)
+
+
 func _setup_admin_window():
 	if ui_canvas == null:
 		return
@@ -850,13 +1015,101 @@ func _setup_admin_window():
 	var root = VBoxContainer.new()
 	root.add_theme_constant_override("separation", 10)
 	root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	root.custom_minimum_size = Vector2(0, 900)
+	root.custom_minimum_size = Vector2(0, 1120)
 	admin_scroll.add_child(root)
 
 	var intro = Label.new()
 	intro.text = "Create access codes, grant direct evaluator access, review active grants, and revoke access without leaving the app."
 	intro.autowrap_mode = TextServer.AUTOWRAP_WORD
 	root.add_child(intro)
+
+	var model_title = Label.new()
+	model_title.text = "Hosted Model Selection"
+	model_title.add_theme_font_size_override("font_size", 18)
+	root.add_child(model_title)
+
+	var model_intro = Label.new()
+	model_intro.text = "Choose the hosted models used by the tutor graph. Teacher Model handles teaching guides, problem generation, and general chat. Verifier Model checks student answers. Fast Model handles routing and adaptation decisions. Gemini options require GOOGLE_API_KEY on the server."
+	model_intro.autowrap_mode = TextServer.AUTOWRAP_WORD
+	root.add_child(model_intro)
+
+	var model_grid = GridContainer.new()
+	model_grid.columns = 2
+	model_grid.add_theme_constant_override("h_separation", 12)
+	model_grid.add_theme_constant_override("v_separation", 6)
+	root.add_child(model_grid)
+
+	var main_model_label = Label.new()
+	main_model_label.text = "Teacher / Explanation Model"
+	model_grid.add_child(main_model_label)
+	admin_model_main_option = OptionButton.new()
+	admin_model_main_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	model_grid.add_child(admin_model_main_option)
+	var main_priority_label = Label.new()
+	main_priority_label.text = "Teacher Priority"
+	model_grid.add_child(main_priority_label)
+	admin_model_main_priority_check = CheckBox.new()
+	admin_model_main_priority_check.text = "Enable Priority"
+	admin_model_main_priority_check.tooltip_text = "Use OpenAI Priority processing for lower latency at higher per-token cost."
+	model_grid.add_child(admin_model_main_priority_check)
+
+	var verifier_model_label = Label.new()
+	verifier_model_label.text = "Verifier Model"
+	model_grid.add_child(verifier_model_label)
+	admin_model_verifier_option = OptionButton.new()
+	admin_model_verifier_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	model_grid.add_child(admin_model_verifier_option)
+	var verifier_priority_label = Label.new()
+	verifier_priority_label.text = "Verifier Priority"
+	model_grid.add_child(verifier_priority_label)
+	admin_model_verifier_priority_check = CheckBox.new()
+	admin_model_verifier_priority_check.text = "Enable Priority"
+	admin_model_verifier_priority_check.tooltip_text = "Use OpenAI Priority processing for lower latency at higher per-token cost."
+	model_grid.add_child(admin_model_verifier_priority_check)
+
+	var fast_model_label = Label.new()
+	fast_model_label.text = "Fast / Routing Model"
+	model_grid.add_child(fast_model_label)
+	admin_model_fast_option = OptionButton.new()
+	admin_model_fast_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	model_grid.add_child(admin_model_fast_option)
+	var fast_priority_label = Label.new()
+	fast_priority_label.text = "Fast Priority"
+	model_grid.add_child(fast_priority_label)
+	admin_model_fast_priority_check = CheckBox.new()
+	admin_model_fast_priority_check.text = "Enable Priority"
+	admin_model_fast_priority_check.tooltip_text = "Use OpenAI Priority processing for lower latency at higher per-token cost."
+	model_grid.add_child(admin_model_fast_priority_check)
+
+	admin_model_main_option.item_selected.connect(func(_index): _refresh_admin_priority_controls())
+	admin_model_verifier_option.item_selected.connect(func(_index): _refresh_admin_priority_controls())
+	admin_model_fast_option.item_selected.connect(func(_index): _refresh_admin_priority_controls())
+
+	var model_button_row = HBoxContainer.new()
+	model_button_row.add_theme_constant_override("separation", 8)
+	root.add_child(model_button_row)
+
+	var refresh_model_button = Button.new()
+	refresh_model_button.text = "Refresh Models"
+	refresh_model_button.pressed.connect(_load_admin_hosted_model_config)
+	model_button_row.add_child(refresh_model_button)
+
+	var save_model_button = Button.new()
+	save_model_button.text = "Save Hosted Models"
+	save_model_button.pressed.connect(_save_admin_hosted_model_config)
+	model_button_row.add_child(save_model_button)
+
+	admin_model_status_label = Label.new()
+	admin_model_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD
+	root.add_child(admin_model_status_label)
+
+	var priority_note = Label.new()
+	priority_note.text = "Priority processing is only available for supported OpenAI models. Gemini selections stay on standard processing."
+	priority_note.autowrap_mode = TextServer.AUTOWRAP_WORD
+	priority_note.modulate = Color(0.78, 0.82, 0.9, 0.92)
+	root.add_child(priority_note)
+
+	root.add_child(HSeparator.new())
 
 	var code_title = Label.new()
 	code_title.text = "Create Access Code"
@@ -1449,6 +1702,7 @@ func _on_admin_button_pressed():
 	)
 	if admin_scroll:
 		admin_scroll.scroll_vertical = 0
+	_load_admin_hosted_model_config()
 	_refresh_admin_lists()
 
 
