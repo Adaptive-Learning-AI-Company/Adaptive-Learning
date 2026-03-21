@@ -1,6 +1,7 @@
 
 import operator
 import os
+import re
 import time
 from typing import TypedDict, List, Annotated, Union
 from fastapi import HTTPException
@@ -233,7 +234,33 @@ def _parse_verifier_response(raw_content: str) -> tuple[bool, int, str]:
     token = "[CORRECT]" if is_correct else "[INCORRECT]"
     if token not in feedback:
         feedback = token + " " + feedback
-    return is_correct, score_percent, feedback
+    return is_correct, score_percent, _strip_feedback_follow_up_question(feedback)
+
+
+def _strip_feedback_follow_up_question(feedback: str) -> str:
+    cleaned = " ".join(str(feedback or "").split()).strip()
+    if cleaned == "":
+        return cleaned
+
+    lowered = cleaned.lower()
+    for marker in (
+        "next concept:",
+        "next question:",
+        "follow-up:",
+        "another check:",
+        "next checkpoint:",
+    ):
+        marker_index = lowered.find(marker)
+        if marker_index > 0:
+            return cleaned[:marker_index].rstrip(" \t\r\n-:;,.")
+
+    sentences = re.split(r"(?<=[.!?])\s+", cleaned)
+    if len(sentences) > 1 and sentences[-1].endswith("?"):
+        preserved = " ".join(sentences[:-1]).strip()
+        if preserved:
+            return preserved
+
+    return cleaned
 
 
 def _parse_target_grade(state: AgentState) -> int | None:
@@ -519,12 +546,15 @@ def teacher_node(state: AgentState):
 
     print(f"[TEACHER DEBUG] Final Mastery Data: {mastery_data}")
 
-    return {
+    result_payload = {
         "messages": [response],
         "current_action": "PROBLEM_GIVEN" if is_knowledge_tracing_mode(learning_mode) else "EXPLAINING",
         "next_dest": "END",
         "mastery": mastery_data,
     }
+    if is_knowledge_tracing_mode(learning_mode):
+        result_payload["last_problem"] = response.content
+    return result_payload
 
 def problem_node(state: AgentState):
     from .database import get_mistakes

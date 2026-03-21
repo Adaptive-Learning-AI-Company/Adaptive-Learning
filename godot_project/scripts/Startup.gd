@@ -1,60 +1,22 @@
 extends Control
 
+const DEFAULT_GRADE_LEVEL := 5
+const DEFAULT_LOCATION := "New Hampshire"
+const DEFAULT_LEARNING_STYLE := "Visual"
+const DEFAULT_ROLE := "Student"
+
 # Main UI
 @onready var create_user_btn = $Panel/TopRightContainer/CreateUserButton
 @onready var username_input = $Panel/MainContainer/UsernameInput
-@onready var manual_check = $Panel/MainContainer/ManualCheck
-@onready var advanced_btn = $Panel/MainContainer/AdvancedButton
+@onready var manual_check = get_node_or_null("Panel/MainContainer/ManualCheck")
+@onready var advanced_btn = get_node_or_null("Panel/MainContainer/AdvancedButton")
 @onready var start_button = $Panel/MainContainer/StartButton
 @onready var status_label = $Panel/MainContainer/StatusLabel
 
-# Advanced UI
-@onready var advanced_popup = $AdvancedPopup
-@onready var grade_option = $AdvancedPopup/VBox/GradeOption
-var role_option = null # Initialized in _ready (Dynamic)
-@onready var location_option = $AdvancedPopup/VBox/LocationOption
-@onready var style_option = $AdvancedPopup/VBox/StyleOption
-@onready var save_check = $AdvancedPopup/VBox/SaveProfileCheck
-@onready var close_advanced_btn = $AdvancedPopup/VBox/CloseAdvanced
+@onready var advanced_popup = get_node_or_null("AdvancedPopup")
 var forgot_pcode_popup: Window = null # Dynamic window for reset
-var manual_help_popup: PanelContainer = null
-
-const MANUAL_DEFAULTS_HELP := "When enabled, Adaptive Tutor stops auto-adjusting the lesson from your saved profile. Use Advanced Settings to force a specific grade level, location, learning style, or role for this session."
 
 func _ready():
-	# Setup Dropdowns (Advanced)
-	grade_option.clear()
-	grade_option.add_item("Kindergarten", 0)
-	for i in range(1, 13):
-		grade_option.add_item("Grade " + str(i), i)
-	grade_option.add_item("Undergraduate", 13)
-	grade_option.add_item("Masters", 15)
-	grade_option.select(5)
-	
-	location_option.clear()
-	var locs = ["New Hampshire", "California", "Texas", "New York", "International"]
-	for l in locs:
-		location_option.add_item(l)
-	
-	style_option.clear()
-	var styles = ["Visual", "Text-Based", "Auditory", "Kinesthetic"]
-	for s in styles:
-		style_option.add_item(s)
-
-	# Role Setup
-	if not has_node("AdvancedPopup/VBox/RoleOption"):
-		role_option = OptionButton.new()
-		role_option.name = "RoleOption"
-		$AdvancedPopup/VBox.add_child(role_option)
-		$AdvancedPopup/VBox.move_child(role_option, 1)
-	else:
-		role_option = $AdvancedPopup/VBox/RoleOption
-		
-	role_option.clear()
-	role_option.add_item("Student", 0)
-	role_option.add_item("Teacher", 1)
-	role_option.selected = 0
-	
 	# Dynamic Password Input for Login
 	if not has_node("Panel/MainContainer/PasswordInput"):
 		var pwd = LineEdit.new()
@@ -78,16 +40,12 @@ func _ready():
 	var pwd_input = $Panel/MainContainer/PasswordInput
 	var acc_input = $Panel/MainContainer/AccessCodeInput
 	var start_btn = $Panel/MainContainer/StartButton
-	var manual = $Panel/MainContainer/ManualCheck
-	var adv_btn = $Panel/MainContainer/AdvancedButton
 	
 	# Move to predictable indices
 	container.move_child(user_opt, 0)
 	container.move_child(pwd_input, 1)
 	container.move_child(acc_input, 2)
-	container.move_child(manual, 3)
-	container.move_child(adv_btn, 4)
-	container.move_child(start_btn, 5)
+	container.move_child(start_btn, 3)
 	
 	# Forgot Password Link
 	if not has_node("Panel/MainContainer/ForgotLink"):
@@ -101,23 +59,23 @@ func _ready():
 		$Panel/MainContainer.move_child(link, $Panel/MainContainer/StartButton.get_index() + 1)
 	
 	create_user_btn.pressed.connect(_on_create_user_pressed)
-	advanced_btn.pressed.connect(_on_advanced_pressed)
-	close_advanced_btn.pressed.connect(_on_close_advanced_pressed)
 	start_button.pressed.connect(_on_start_pressed)
 	if username_input:
 		username_input.text_submitted.connect(func(_text): _on_start_pressed())
 
-	_setup_manual_help_popup()
+	if manual_check:
+		manual_check.visible = false
+		manual_check.disabled = true
+	if advanced_btn:
+		advanced_btn.visible = false
+		advanced_btn.disabled = true
+	if advanced_popup:
+		advanced_popup.visible = false
+
 	_restore_preferences()
 
 func _on_create_user_pressed():
 	get_tree().change_scene_to_file("res://scenes/Registration.tscn")
-
-func _on_advanced_pressed():
-	advanced_popup.visible = true
-
-func _on_close_advanced_pressed():
-	advanced_popup.visible = false
 
 func _on_start_pressed():
 	var username = username_input.text.strip_edges()
@@ -125,7 +83,7 @@ func _on_start_pressed():
 		status_label.text = "Please enter a username."
 		return
 
-	save_preferences(username, grade_option.get_selected_id())
+	save_preferences(username)
 	
 	# Verify Password
 	var pwd_input = $Panel/MainContainer/PasswordInput
@@ -187,14 +145,12 @@ func _on_start_pressed():
 	
 	print("Startup: Attempting to login to: " + url)
 	http.request(url, headers, HTTPClient.METHOD_POST, JSON.stringify(data))
-
-	# Gather settings from Advanced (even if hidden, they hold values)
 	
 func _redeem_access_code_then_initialize(username):
 	var acc_input = $Panel/MainContainer/AccessCodeInput
 	var access_code = acc_input.text.strip_edges() if acc_input else ""
 	if access_code == "":
-		_initialize_session(username)
+		_load_profile_then_initialize(username)
 		return
 
 	status_label.text = "Redeeming access code..."
@@ -208,7 +164,7 @@ func _redeem_access_code_then_initialize(username):
 		if acc_input:
 			acc_input.text = ""
 		status_label.text = "Access code accepted."
-		_initialize_session(username)
+		_load_profile_then_initialize(username)
 	, func(code, err):
 		start_button.disabled = false
 		status_label.text = err if err != "" else "Access code failed."
@@ -278,18 +234,45 @@ func _send_reset_request(username):
 	]
 	http.request(url, headers, HTTPClient.METHOD_POST, JSON.stringify(data))
 
-func _initialize_session(username):
-	var grade_val = grade_option.get_selected_id()
-	var loc_val = location_option.get_item_text(location_option.selected)
-	var style_val = style_option.get_item_text(style_option.selected)
+func _load_manual_mode_preference() -> bool:
+	var config = ConfigFile.new()
+	config.load("user://settings.cfg")
+	return bool(config.get_value("user", "manual_mode", false))
 
-	var role_val = "Student"
-	if role_option and role_option.selected == 1:
-		role_val = "Teacher"
-		
-	var do_save = save_check.button_pressed
-	var is_manual = manual_check.button_pressed
-	
+
+func _load_saved_grade_preference() -> int:
+	var config = ConfigFile.new()
+	config.load("user://settings.cfg")
+	return int(config.get_value("user", "grade", DEFAULT_GRADE_LEVEL))
+
+
+func _profile_text_value(profile_data, key: String, fallback: String) -> String:
+	if profile_data != null and profile_data.has(key):
+		var value = profile_data[key]
+		if value != null:
+			var normalized = str(value).strip_edges()
+			if normalized != "":
+				return normalized
+	return fallback
+
+
+func _load_profile_then_initialize(username):
+	status_label.text = "Loading profile..."
+	NetworkManager.post_request("/get_profile", {"username": username}, func(_code, response):
+		_initialize_session(username, response)
+	, func(_code, err):
+		start_button.disabled = false
+		status_label.text = err if err != "" else "Unable to load profile."
+	)
+
+
+func _initialize_session(username, profile_data = null):
+	var grade_val = int(profile_data["grade_level"]) if profile_data != null and profile_data.has("grade_level") and profile_data["grade_level"] != null else _load_saved_grade_preference()
+	var loc_val = _profile_text_value(profile_data, "location", DEFAULT_LOCATION)
+	var style_val = _profile_text_value(profile_data, "learning_style", DEFAULT_LEARNING_STYLE)
+	var role_val = _profile_text_value(profile_data, "role", DEFAULT_ROLE)
+	var is_manual = _load_manual_mode_preference()
+
 	save_preferences(username, grade_val)
 	
 	status_label.text = "Initializing Session..."
@@ -305,6 +288,8 @@ func _initialize_session(username):
 		gm.player_username = username
 		gm.manual_selection_mode = is_manual
 		gm.player_grade = grade_val
+		gm.player_location = loc_val
+		gm.player_style = style_val
 		
 		# Sync NetworkManager
 		NetworkManager.current_username = username
@@ -314,9 +299,8 @@ func _initialize_session(username):
 		"grade_level": grade_val,
 		"location": loc_val,
 		"learning_style": style_val,
-
 		"role": role_val,
-		"save_profile": do_save
+		"save_profile": false
 	}
 	
 	var init_http = HTTPRequest.new()
@@ -360,96 +344,11 @@ func _restore_preferences():
 		var saved_name = config.get_value("user", "username", "")
 		if username_input:
 			username_input.text = str(saved_name)
-		
-		# Load advanced settings?
-		var s_grade = config.get_value("user", "grade", 10)
-		# Select grade
-		for i in range(grade_option.item_count):
-			if grade_option.get_item_id(i) == s_grade:
-				grade_option.selected = i
-				break
 
-func save_preferences(name, grade):
+func save_preferences(name, grade = null):
 	var config = ConfigFile.new()
+	config.load("user://settings.cfg")
 	config.set_value("user", "username", name)
-	config.set_value("user", "grade", grade)
+	if grade != null:
+		config.set_value("user", "grade", grade)
 	config.save("user://settings.cfg")
-
-
-func _setup_manual_help_popup():
-	if manual_check == null:
-		return
-
-	manual_check.tooltip_text = ""
-	manual_check.mouse_entered.connect(_show_manual_help)
-	manual_check.mouse_exited.connect(_hide_manual_help)
-	manual_check.focus_entered.connect(func(): _show_manual_help(false))
-	manual_check.focus_exited.connect(func(): _hide_manual_help())
-	manual_check.gui_input.connect(_on_manual_check_gui_input)
-
-	manual_help_popup = PanelContainer.new()
-	manual_help_popup.visible = false
-	manual_help_popup.z_index = 50
-	manual_help_popup.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var panel_style = StyleBoxFlat.new()
-	panel_style.bg_color = Color(0.08, 0.1, 0.14, 0.96)
-	panel_style.border_color = Color(0.58, 0.86, 1.0, 0.95)
-	panel_style.border_width_left = 2
-	panel_style.border_width_top = 2
-	panel_style.border_width_right = 2
-	panel_style.border_width_bottom = 2
-	panel_style.corner_radius_top_left = 12
-	panel_style.corner_radius_top_right = 12
-	panel_style.corner_radius_bottom_right = 12
-	panel_style.corner_radius_bottom_left = 12
-	manual_help_popup.add_theme_stylebox_override("panel", panel_style)
-	manual_help_popup.custom_minimum_size = Vector2(420, 110)
-	add_child(manual_help_popup)
-
-	var help_margin = MarginContainer.new()
-	help_margin.set_anchors_preset(Control.PRESET_FULL_RECT)
-	help_margin.add_theme_constant_override("margin_left", 14)
-	help_margin.add_theme_constant_override("margin_top", 12)
-	help_margin.add_theme_constant_override("margin_right", 14)
-	help_margin.add_theme_constant_override("margin_bottom", 12)
-	manual_help_popup.add_child(help_margin)
-
-	var help_label = Label.new()
-	help_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	help_label.text = MANUAL_DEFAULTS_HELP
-	help_label.custom_minimum_size = Vector2(392, 0)
-	help_margin.add_child(help_label)
-
-
-func _show_manual_help(_unused = null):
-	if manual_help_popup == null or manual_check == null:
-		return
-
-	var checkbox_rect = manual_check.get_global_rect()
-	var viewport_rect = get_viewport_rect()
-	var popup_size = manual_help_popup.custom_minimum_size
-	var desired_position = Vector2(
-		checkbox_rect.position.x,
-		checkbox_rect.position.y + checkbox_rect.size.y + 10.0
-	)
-	desired_position.x = clamp(desired_position.x, 16.0, max(16.0, viewport_rect.size.x - popup_size.x - 16.0))
-	desired_position.y = clamp(desired_position.y, 16.0, max(16.0, viewport_rect.size.y - popup_size.y - 16.0))
-	manual_help_popup.position = desired_position
-	manual_help_popup.show()
-
-func _hide_manual_help():
-	if manual_help_popup:
-		manual_help_popup.hide()
-
-
-func _on_manual_check_gui_input(event):
-	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
-		if event.pressed:
-			_show_manual_help()
-		else:
-			_hide_manual_help()
-	elif event is InputEventScreenTouch:
-		if event.pressed:
-			_show_manual_help()
-		else:
-			_hide_manual_help()

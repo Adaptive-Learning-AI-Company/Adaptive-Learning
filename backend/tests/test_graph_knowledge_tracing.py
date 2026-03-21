@@ -7,7 +7,7 @@ from sqlalchemy.orm import sessionmaker
 import backend.database as database_module
 import backend.graph as graph_module
 from backend.database import Base, Player
-from backend.graph import adapter_node, teacher_node, verifier_node
+from backend.graph import _parse_verifier_response, adapter_node, teacher_node, verifier_node
 from backend.knowledge_tracing import KNOWLEDGE_TRACING_MODE, knowledge_tracing_topic_name
 
 
@@ -85,6 +85,7 @@ def test_teacher_knowledge_tracing_answer_roundtrip(monkeypatch):
     }
 
     teacher_result = teacher_node(state)
+    assert teacher_result["last_problem"] == 'What part of speech is the word "but" in the sentence?'
     answer_state = dict(state)
     answer_state.update({key: value for key, value in teacher_result.items() if key != "messages"})
     answer_state["messages"] = state["messages"] + teacher_result["messages"] + [HumanMessage(content="conjunction")]
@@ -103,3 +104,13 @@ def test_teacher_knowledge_tracing_answer_roundtrip(monkeypatch):
     assert len(captured_calls) == 2
     assert "model_kwargs" not in captured_calls[0]["kwargs"]
     assert "model_kwargs" not in captured_calls[1]["kwargs"]
+
+
+def test_parse_verifier_response_strips_rogue_follow_up_question():
+    is_correct, score_percent, feedback = _parse_verifier_response(
+        '{"result": "CORRECT", "score_percent": 100, "feedback": "Correct. Next concept: What is the function of chlorophyll in plants?"}'
+    )
+
+    assert is_correct is True
+    assert score_percent == 100
+    assert feedback == "[CORRECT] Correct"

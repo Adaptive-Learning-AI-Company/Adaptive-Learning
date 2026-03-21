@@ -47,6 +47,9 @@ const BEACON_TEXT := {
 	"History": "Story Archive",
 	"English": "Language Studio"
 }
+const PROFILE_LOCATION_OPTIONS := ["New Hampshire", "California", "Texas", "New York", "International"]
+const PROFILE_STYLE_OPTIONS := ["Visual", "Text-Based", "Auditory", "Kinesthetic"]
+const PROFILE_MANUAL_MODE_HELP := "When enabled, book launches stay on the exact material you select instead of adding adaptive review or challenge adjustments from your saved defaults."
 
 var network_manager
 var player
@@ -73,6 +76,11 @@ var teacher_window: PanelContainer
 var teacher_scroll: ScrollContainer
 var sidebar_access_label: Label
 var profile_email_input: LineEdit
+var profile_grade_option: OptionButton
+var profile_location_option: OptionButton
+var profile_style_option: OptionButton
+var profile_role_option: OptionButton
+var profile_manual_mode_check: CheckBox
 var profile_avatar_option: OptionButton
 var profile_openai_key_input: LineEdit
 var profile_clear_key_check: CheckBox
@@ -100,9 +108,6 @@ var admin_revoke_reason_input: LineEdit
 var admin_model_main_option: OptionButton
 var admin_model_verifier_option: OptionButton
 var admin_model_fast_option: OptionButton
-var admin_model_main_priority_check: CheckBox
-var admin_model_verifier_priority_check: CheckBox
-var admin_model_fast_priority_check: CheckBox
 var admin_model_status_label: Label
 var admin_code_assigned_input: LineEdit
 var admin_code_plan_option: OptionButton
@@ -173,6 +178,7 @@ func _ready():
 	var gm = get_node("/root/GameManager")
 	if gm:
 		network_manager.current_username = gm.player_username
+		gm.manual_selection_mode = _load_manual_mode_preference()
 		profile_grade_level = clamp(int(round(float(gm.player_grade))), 1, BOOKS_PER_SUBJECT)
 		if str(gm.learning_mode).strip_edges() == "":
 			gm.learning_mode = "teach_me"
@@ -650,13 +656,70 @@ func _setup_profile_window():
 	var content = VBoxContainer.new()
 	content.add_theme_constant_override("separation", 10)
 	content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	content.custom_minimum_size = Vector2(0, 980)
+	content.custom_minimum_size = Vector2(0, 1220)
 	profile_scroll.add_child(content)
 
 	var intro = Label.new()
-	intro.text = "Save a recovery email, switch avatars, bring your own OpenAI key, or manage your subscription."
+	intro.text = "Save your learning defaults, recovery email, avatar, personal OpenAI key, and subscription settings."
 	intro.autowrap_mode = TextServer.AUTOWRAP_WORD
 	content.add_child(intro)
+
+	var learning_title = Label.new()
+	learning_title.text = "Learning Defaults"
+	learning_title.add_theme_font_size_override("font_size", 18)
+	content.add_child(learning_title)
+
+	var learning_intro = Label.new()
+	learning_intro.text = "These saved defaults are used on future logins. \"Disable Adaptive Defaults\" is stored on this device."
+	learning_intro.autowrap_mode = TextServer.AUTOWRAP_WORD
+	content.add_child(learning_intro)
+
+	profile_manual_mode_check = CheckBox.new()
+	profile_manual_mode_check.text = "Disable Adaptive Defaults"
+	content.add_child(profile_manual_mode_check)
+
+	var manual_mode_note = Label.new()
+	manual_mode_note.text = PROFILE_MANUAL_MODE_HELP
+	manual_mode_note.autowrap_mode = TextServer.AUTOWRAP_WORD
+	manual_mode_note.modulate = Color(0.78, 0.82, 0.9, 0.92)
+	content.add_child(manual_mode_note)
+
+	var grade_label = Label.new()
+	grade_label.text = "Saved Grade Level"
+	content.add_child(grade_label)
+
+	profile_grade_option = OptionButton.new()
+	profile_grade_option.add_item("Kindergarten", 0)
+	for i in range(1, 13):
+		profile_grade_option.add_item("Grade " + str(i), i)
+	profile_grade_option.add_item("Undergraduate", 13)
+	profile_grade_option.add_item("Masters", 15)
+	content.add_child(profile_grade_option)
+
+	var location_label = Label.new()
+	location_label.text = "Saved Location"
+	content.add_child(location_label)
+
+	profile_location_option = OptionButton.new()
+	for location_name in PROFILE_LOCATION_OPTIONS:
+		profile_location_option.add_item(location_name)
+	content.add_child(profile_location_option)
+
+	var style_label = Label.new()
+	style_label.text = "Saved Learning Style"
+	content.add_child(style_label)
+
+	profile_style_option = OptionButton.new()
+	for style_name in PROFILE_STYLE_OPTIONS:
+		profile_style_option.add_item(style_name)
+	content.add_child(profile_style_option)
+
+	var role_label = Label.new()
+	role_label.text = "Saved Role"
+	content.add_child(role_label)
+
+	profile_role_option = OptionButton.new()
+	content.add_child(profile_role_option)
 
 	var email_label = Label.new()
 	email_label.text = "Recovery Email"
@@ -824,6 +887,65 @@ func _is_teacher_dashboard_user() -> bool:
 	return profile_role == "Teacher" or profile_is_admin
 
 
+func _load_library_settings() -> ConfigFile:
+	var config = ConfigFile.new()
+	config.load("user://settings.cfg")
+	return config
+
+
+func _save_library_preferences(username: String, grade_value: int, manual_mode_enabled: bool):
+	var config = _load_library_settings()
+	config.set_value("user", "username", username)
+	config.set_value("user", "grade", grade_value)
+	config.set_value("user", "manual_mode", manual_mode_enabled)
+	config.save("user://settings.cfg")
+
+
+func _load_manual_mode_preference() -> bool:
+	var config = _load_library_settings()
+	return bool(config.get_value("user", "manual_mode", false))
+
+
+func _populate_profile_role_option(current_role: String):
+	if profile_role_option == null:
+		return
+	var selected_role = current_role if current_role != "" else "Student"
+	profile_role_option.clear()
+	profile_role_option.add_item("Student")
+	profile_role_option.set_item_metadata(profile_role_option.item_count - 1, "Student")
+	profile_role_option.add_item("Teacher")
+	profile_role_option.set_item_metadata(profile_role_option.item_count - 1, "Teacher")
+	if profile_is_admin or selected_role == "Admin":
+		profile_role_option.add_item("Admin")
+		profile_role_option.set_item_metadata(profile_role_option.item_count - 1, "Admin")
+	for index in range(profile_role_option.item_count):
+		if str(profile_role_option.get_item_metadata(index)) == selected_role:
+			profile_role_option.select(index)
+			return
+	profile_role_option.select(0)
+
+
+func _select_profile_grade(grade_value: int):
+	if profile_grade_option == null:
+		return
+	for index in range(profile_grade_option.item_count):
+		if profile_grade_option.get_item_id(index) == grade_value:
+			profile_grade_option.select(index)
+			return
+
+
+func _select_profile_option_by_text(option: OptionButton, target_text: String):
+	if option == null:
+		return
+	for index in range(option.item_count):
+		if option.get_item_text(index) == target_text:
+			option.select(index)
+			return
+	if target_text.strip_edges() != "":
+		option.add_item(target_text)
+		option.select(option.item_count - 1)
+
+
 func _refresh_admin_visibility():
 	if admin_access_button:
 		admin_access_button.visible = _is_admin_user()
@@ -845,20 +967,25 @@ func _admin_selected_plan_code(option: OptionButton) -> String:
 	return "byok_monthly" if option and option.selected == 1 else "hosted_monthly"
 
 
-func _format_admin_model_option_label(entry: Dictionary) -> String:
+func _format_admin_price_label(input_price, output_price) -> String:
+	if input_price == null or output_price == null:
+		return "pricing unavailable"
+	return "$" + str(input_price) + " in / $" + str(output_price) + " out per 1M"
+
+
+func _format_admin_model_option_label(entry: Dictionary, priority_enabled: bool) -> String:
 	var provider = str(entry.get("provider", "openai")).capitalize()
 	var display_name = str(entry.get("display_name", entry.get("model_id", "model")))
-	var input_price = entry.get("input_price_per_1m", null)
-	var output_price = entry.get("output_price_per_1m", null)
-	var label = "[" + provider + "] " + display_name
-	if input_price != null and output_price != null:
-		label += " ($" + str(input_price) + " / $" + str(output_price) + ")"
+	var input_price = entry.get("priority_input_price_per_1m", null) if priority_enabled else entry.get("input_price_per_1m", null)
+	var output_price = entry.get("priority_output_price_per_1m", null) if priority_enabled else entry.get("output_price_per_1m", null)
+	var tier_label = "Priority" if priority_enabled else "Standard"
+	var label = "[" + provider + "] " + display_name + " - " + tier_label + " (" + _format_admin_price_label(input_price, output_price) + ")"
 	if not bool(entry.get("is_available", false)):
 		label += " [" + str(entry.get("required_env_var", "missing env")) + " required]"
 	return label
 
 
-func _populate_admin_model_option(option: OptionButton, selected_model: String):
+func _populate_admin_model_option(option: OptionButton, selected_model: String, selected_priority_enabled: bool):
 	if option == null:
 		return
 	option.clear()
@@ -867,22 +994,42 @@ func _populate_admin_model_option(option: OptionButton, selected_model: String):
 		var model_id = str(entry.get("model_id", "")).strip_edges()
 		if model_id == "":
 			continue
-		option.add_item(_format_admin_model_option_label(entry))
-		var index = option.item_count - 1
-		option.set_item_metadata(index, model_id)
-		option.set_item_tooltip(index, str(entry.get("description", "")))
-		if model_id == selected_model:
-			selected_index = index
+		var choice_variants = [false]
+		if _admin_bool_value(entry.get("supports_priority", false)):
+			choice_variants.append(true)
+		for priority_enabled in choice_variants:
+			option.add_item(_format_admin_model_option_label(entry, priority_enabled))
+			var index = option.item_count - 1
+			option.set_item_metadata(index, {
+				"model_id": model_id,
+				"priority_enabled": priority_enabled,
+			})
+			option.set_item_tooltip(index, str(entry.get("description", "")))
+			if model_id == selected_model and priority_enabled == selected_priority_enabled:
+				selected_index = index
 	if selected_index >= 0:
 		option.select(selected_index)
 	elif option.item_count > 0:
 		option.select(0)
 
 
-func _admin_selected_model_id(option: OptionButton) -> String:
+func _admin_selected_model_metadata(option: OptionButton) -> Dictionary:
 	if option == null or option.item_count == 0 or option.selected < 0:
-		return ""
-	return str(option.get_item_metadata(option.selected))
+		return {}
+	var metadata = option.get_item_metadata(option.selected)
+	return metadata if typeof(metadata) == TYPE_DICTIONARY else {}
+
+
+func _admin_selected_model_id(option: OptionButton) -> String:
+	return str(_admin_selected_model_metadata(option).get("model_id", ""))
+
+
+func _admin_selected_priority_enabled(option: OptionButton) -> bool:
+	return _admin_bool_value(_admin_selected_model_metadata(option).get("priority_enabled", false))
+
+
+func _priority_status_suffix(priority_enabled: bool) -> String:
+	return " (Priority)" if priority_enabled else " (Standard)"
 
 
 func _admin_bool_value(value) -> bool:
@@ -904,37 +1051,6 @@ func _admin_model_entry_by_id(model_id: String) -> Dictionary:
 	return {}
 
 
-func _admin_model_supports_priority(model_id: String) -> bool:
-	return _admin_bool_value(_admin_model_entry_by_id(model_id).get("supports_priority", false))
-
-
-func _refresh_admin_priority_checkbox(option: OptionButton, checkbox: CheckBox):
-	if checkbox == null:
-		return
-	var model_id = _admin_selected_model_id(option)
-	var supports_priority = _admin_model_supports_priority(model_id)
-	checkbox.text = "Enable Priority"
-	if supports_priority:
-		checkbox.disabled = false
-		checkbox.tooltip_text = "Use OpenAI Priority processing for lower latency at higher per-token cost."
-	else:
-		checkbox.button_pressed = false
-		checkbox.disabled = true
-		checkbox.tooltip_text = "Priority processing is only available on supported OpenAI models."
-
-
-func _refresh_admin_priority_controls():
-	_refresh_admin_priority_checkbox(admin_model_main_option, admin_model_main_priority_check)
-	_refresh_admin_priority_checkbox(admin_model_verifier_option, admin_model_verifier_priority_check)
-	_refresh_admin_priority_checkbox(admin_model_fast_option, admin_model_fast_priority_check)
-
-
-func _priority_status_suffix(checkbox: CheckBox) -> String:
-	if checkbox != null and not checkbox.disabled and checkbox.button_pressed:
-		return " (Priority)"
-	return " (Standard)"
-
-
 func _load_admin_hosted_model_config():
 	if not _is_admin_user():
 		return
@@ -952,21 +1068,17 @@ func _on_admin_hosted_model_config_loaded(_code, response):
 	var teacher_model = str(response.get("teacher_model", response.get("main_model", "")))
 	var verifier_model = str(response.get("verifier_model", teacher_model))
 	var fast_model = str(response.get("fast_model", ""))
-	_populate_admin_model_option(admin_model_main_option, teacher_model)
-	_populate_admin_model_option(admin_model_verifier_option, verifier_model)
-	_populate_admin_model_option(admin_model_fast_option, fast_model)
-	if admin_model_main_priority_check:
-		admin_model_main_priority_check.button_pressed = _admin_bool_value(response.get("teacher_priority_enabled", response.get("main_priority_enabled", false)))
-	if admin_model_verifier_priority_check:
-		admin_model_verifier_priority_check.button_pressed = _admin_bool_value(response.get("verifier_priority_enabled", false))
-	if admin_model_fast_priority_check:
-		admin_model_fast_priority_check.button_pressed = _admin_bool_value(response.get("fast_priority_enabled", false))
-	_refresh_admin_priority_controls()
+	var teacher_priority_enabled = _admin_bool_value(response.get("teacher_priority_enabled", response.get("main_priority_enabled", false)))
+	var verifier_priority_enabled = _admin_bool_value(response.get("verifier_priority_enabled", false))
+	var fast_priority_enabled = _admin_bool_value(response.get("fast_priority_enabled", false))
+	_populate_admin_model_option(admin_model_main_option, teacher_model, teacher_priority_enabled)
+	_populate_admin_model_option(admin_model_verifier_option, verifier_model, verifier_priority_enabled)
+	_populate_admin_model_option(admin_model_fast_option, fast_model, fast_priority_enabled)
 	if admin_model_status_label:
 		var teacher_display = str(response.get("teacher_display_name", response.get("main_display_name", teacher_model)))
 		var verifier_display = str(response.get("verifier_display_name", verifier_model))
 		var fast_display = str(response.get("fast_display_name", fast_model))
-		admin_model_status_label.text = "Current hosted models: Teacher = " + teacher_display + _priority_status_suffix(admin_model_main_priority_check) + " | Verifier = " + verifier_display + _priority_status_suffix(admin_model_verifier_priority_check) + " | Fast = " + fast_display + _priority_status_suffix(admin_model_fast_priority_check)
+		admin_model_status_label.text = "Current hosted models: Teacher = " + teacher_display + _priority_status_suffix(_admin_selected_priority_enabled(admin_model_main_option)) + " | Verifier = " + verifier_display + _priority_status_suffix(_admin_selected_priority_enabled(admin_model_verifier_option)) + " | Fast = " + fast_display + _priority_status_suffix(_admin_selected_priority_enabled(admin_model_fast_option))
 
 
 func _save_admin_hosted_model_config():
@@ -975,7 +1087,6 @@ func _save_admin_hosted_model_config():
 	var teacher_model = _admin_selected_model_id(admin_model_main_option)
 	var verifier_model = _admin_selected_model_id(admin_model_verifier_option)
 	var fast_model = _admin_selected_model_id(admin_model_fast_option)
-	_refresh_admin_priority_controls()
 	if teacher_model == "" or verifier_model == "" or fast_model == "":
 		if admin_model_status_label:
 			admin_model_status_label.text = "Select a teacher model, verifier model, and fast model."
@@ -987,9 +1098,9 @@ func _save_admin_hosted_model_config():
 		"teacher_model": teacher_model,
 		"verifier_model": verifier_model,
 		"fast_model": fast_model,
-		"teacher_priority_enabled": admin_model_main_priority_check != null and not admin_model_main_priority_check.disabled and admin_model_main_priority_check.button_pressed,
-		"verifier_priority_enabled": admin_model_verifier_priority_check != null and not admin_model_verifier_priority_check.disabled and admin_model_verifier_priority_check.button_pressed,
-		"fast_priority_enabled": admin_model_fast_priority_check != null and not admin_model_fast_priority_check.disabled and admin_model_fast_priority_check.button_pressed
+		"teacher_priority_enabled": _admin_selected_priority_enabled(admin_model_main_option),
+		"verifier_priority_enabled": _admin_selected_priority_enabled(admin_model_verifier_option),
+		"fast_priority_enabled": _admin_selected_priority_enabled(admin_model_fast_option)
 	}
 	NetworkManager.post_request("/admin/set_hosted_model_config", payload, func(_code, response):
 		_on_admin_hosted_model_config_loaded(_code, response)
@@ -1000,6 +1111,8 @@ func _save_admin_hosted_model_config():
 		if admin_model_status_label:
 			admin_model_status_label.text = err if err != "" else "Unable to save hosted model settings."
 	)
+
+
 
 
 func _setup_admin_window():
@@ -1098,13 +1211,6 @@ func _setup_admin_window():
 	admin_model_main_option = OptionButton.new()
 	admin_model_main_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	model_grid.add_child(admin_model_main_option)
-	var main_priority_label = Label.new()
-	main_priority_label.text = "Teacher Priority"
-	model_grid.add_child(main_priority_label)
-	admin_model_main_priority_check = CheckBox.new()
-	admin_model_main_priority_check.text = "Enable Priority"
-	admin_model_main_priority_check.tooltip_text = "Use OpenAI Priority processing for lower latency at higher per-token cost."
-	model_grid.add_child(admin_model_main_priority_check)
 
 	var verifier_model_label = Label.new()
 	verifier_model_label.text = "Verifier Model"
@@ -1112,13 +1218,6 @@ func _setup_admin_window():
 	admin_model_verifier_option = OptionButton.new()
 	admin_model_verifier_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	model_grid.add_child(admin_model_verifier_option)
-	var verifier_priority_label = Label.new()
-	verifier_priority_label.text = "Verifier Priority"
-	model_grid.add_child(verifier_priority_label)
-	admin_model_verifier_priority_check = CheckBox.new()
-	admin_model_verifier_priority_check.text = "Enable Priority"
-	admin_model_verifier_priority_check.tooltip_text = "Use OpenAI Priority processing for lower latency at higher per-token cost."
-	model_grid.add_child(admin_model_verifier_priority_check)
 
 	var fast_model_label = Label.new()
 	fast_model_label.text = "Fast / Routing Model"
@@ -1126,17 +1225,6 @@ func _setup_admin_window():
 	admin_model_fast_option = OptionButton.new()
 	admin_model_fast_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	model_grid.add_child(admin_model_fast_option)
-	var fast_priority_label = Label.new()
-	fast_priority_label.text = "Fast Priority"
-	model_grid.add_child(fast_priority_label)
-	admin_model_fast_priority_check = CheckBox.new()
-	admin_model_fast_priority_check.text = "Enable Priority"
-	admin_model_fast_priority_check.tooltip_text = "Use OpenAI Priority processing for lower latency at higher per-token cost."
-	model_grid.add_child(admin_model_fast_priority_check)
-
-	admin_model_main_option.item_selected.connect(func(_index): _refresh_admin_priority_controls())
-	admin_model_verifier_option.item_selected.connect(func(_index): _refresh_admin_priority_controls())
-	admin_model_fast_option.item_selected.connect(func(_index): _refresh_admin_priority_controls())
 
 	var model_button_row = HBoxContainer.new()
 	model_button_row.add_theme_constant_override("separation", 8)
@@ -1157,7 +1245,7 @@ func _setup_admin_window():
 	root.add_child(admin_model_status_label)
 
 	var priority_note = Label.new()
-	priority_note.text = "Priority processing is only available for supported OpenAI models. Gemini selections stay on standard processing."
+	priority_note.text = "Priority-enabled variants appear directly in the dropdown with their higher token pricing. Gemini selections only appear as standard processing."
 	priority_note.autowrap_mode = TextServer.AUTOWRAP_WORD
 	priority_note.modulate = Color(0.78, 0.82, 0.9, 0.92)
 	root.add_child(priority_note)
@@ -1813,6 +1901,23 @@ func _on_profile_loaded(_code, response):
 	if response == null:
 		return
 
+	profile_grade_level = int(response.get("grade_level", profile_grade_level))
+	profile_role = str(response.get("role", profile_role))
+	GameManager.player_grade = profile_grade_level
+	GameManager.player_location = str(response.get("location", GameManager.player_location))
+	GameManager.player_style = str(response.get("learning_style", GameManager.player_style))
+	GameManager.manual_selection_mode = _load_manual_mode_preference()
+
+	if profile_grade_option:
+		_select_profile_grade(profile_grade_level)
+	if profile_location_option:
+		_select_profile_option_by_text(profile_location_option, GameManager.player_location)
+	if profile_style_option:
+		_select_profile_option_by_text(profile_style_option, GameManager.player_style)
+	_populate_profile_role_option(profile_role)
+	if profile_manual_mode_check:
+		profile_manual_mode_check.button_pressed = GameManager.manual_selection_mode
+
 	if profile_email_input:
 		profile_email_input.text = str(response.get("email", ""))
 
@@ -2408,6 +2513,10 @@ func _save_profile_settings():
 
 	var payload = {
 		"username": GameManager.player_username,
+		"grade_level": profile_grade_option.get_selected_id() if profile_grade_option else profile_grade_level,
+		"location": profile_location_option.get_item_text(profile_location_option.selected) if profile_location_option and profile_location_option.selected >= 0 else GameManager.player_location,
+		"learning_style": profile_style_option.get_item_text(profile_style_option.selected) if profile_style_option and profile_style_option.selected >= 0 else GameManager.player_style,
+		"role": str(profile_role_option.get_item_metadata(profile_role_option.selected)) if profile_role_option and profile_role_option.selected >= 0 else profile_role,
 		"email": profile_email_input.text.strip_edges(),
 		"avatar_id": "schoolboy" if profile_avatar_option.selected == 1 else "schoolgirl",
 		"openai_api_key": profile_openai_key_input.text.strip_edges(),
@@ -2425,6 +2534,13 @@ func _on_profile_saved(_code, response):
 		return
 
 	GameManager.player_avatar_id = str(response.get("avatar_id", "schoolgirl"))
+	GameManager.player_grade = int(response.get("grade_level", GameManager.player_grade))
+	GameManager.player_location = str(response.get("location", GameManager.player_location))
+	GameManager.player_style = str(response.get("learning_style", GameManager.player_style))
+	GameManager.manual_selection_mode = profile_manual_mode_check != null and profile_manual_mode_check.button_pressed
+	profile_grade_level = GameManager.player_grade
+	profile_role = str(response.get("role", profile_role))
+	_save_library_preferences(GameManager.player_username, GameManager.player_grade, GameManager.manual_selection_mode)
 	if player and is_instance_valid(player):
 		player.apply_profile_avatar(GameManager.player_avatar_id)
 
@@ -2440,6 +2556,7 @@ func _on_profile_saved(_code, response):
 		profile_clear_key_check.button_pressed = false
 	if profile_status_label:
 		profile_status_label.text = "Profile updated."
+	_populate_profile_role_option(profile_role)
 
 	fetch_stats()
 	_fetch_billing_status()

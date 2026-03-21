@@ -246,6 +246,10 @@ def _build_profile_response(player: Player) -> ProfileResponse:
         username=player.username,
         display_name=player.display_name,
         email=player.email,
+        grade_level=int(player.grade_level or 0),
+        location=player.location,
+        learning_style=player.learning_style,
+        role=player.role or "Student",
         avatar_id=normalize_avatar_id(player.avatar_id),
         has_personal_openai_key=bool(player.openai_api_key_encrypted),
         openai_key_hint=mask_secret(player.openai_api_key_encrypted),
@@ -897,6 +901,16 @@ async def update_profile(request: UpdateProfileRequest, current_user: Player = D
         if trimmed_email and not _is_valid_email(trimmed_email):
             raise HTTPException(status_code=400, detail="Please enter a valid email address.")
         player.email = trimmed_email or None
+    if request.grade_level is not None:
+        player.grade_level = int(request.grade_level)
+    if request.location is not None:
+        player.location = _clean_optional_text(request.location) or player.location or "New Hampshire"
+        if request.curriculum_region is None:
+            player.curriculum_region = player.location
+    if request.learning_style is not None:
+        player.learning_style = _clean_optional_text(request.learning_style) or player.learning_style or "Visual"
+    if request.role is not None:
+        player.role = _normalize_user_role(request.role, allow_admin=_is_admin_user(current_user))
     if request.avatar_id is not None:
         player.avatar_id = normalize_avatar_id(request.avatar_id)
     if request.curriculum_region is not None:

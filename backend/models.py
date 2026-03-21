@@ -108,6 +108,10 @@ class UpdateProfileRequest(BaseModel):
     username: str
     display_name: Optional[str] = None
     email: Optional[str] = None
+    grade_level: Optional[int] = None
+    location: Optional[str] = None
+    learning_style: Optional[str] = None
+    role: Optional[str] = None
     avatar_id: Optional[str] = None
     openai_api_key: Optional[str] = None
     clear_openai_api_key: bool = False
@@ -124,6 +128,10 @@ class ProfileResponse(BaseModel):
     username: str
     display_name: Optional[str] = None
     email: Optional[str] = None
+    grade_level: int = 1
+    location: Optional[str] = None
+    learning_style: Optional[str] = None
+    role: str = "Student"
     avatar_id: str
     has_personal_openai_key: bool = False
     openai_key_hint: Optional[str] = None
