@@ -58,6 +58,7 @@ class BookSelectRequest(BaseModel):
     topic: str
     manual_mode: bool = False
     session_grade_level: Optional[int] = None # The grade effective for this session
+    learning_mode: str = "teach_me"
 
 class BookSelectResponse(BaseModel):
     session_id: str
@@ -65,6 +66,10 @@ class BookSelectResponse(BaseModel):
     xp: int
     level: int
     mastery: int
+    mastery_level: int = 0
+    learning_mode: str = "teach_me"
+    resolved_topic: Optional[str] = None
+    topic_label: Optional[str] = None
     history_summary: Optional[str] = None
     state_snapshot: Optional[Dict] = None 
     role: Optional[str] = "Student" # To inform UI to show toggle
@@ -216,8 +221,10 @@ class StudentTopicProgressSummary(BaseModel):
     topic_name: str
     subject_key: Optional[str] = None
     book_level: Optional[int] = None
+    learning_mode: str = "teach_me"
     status: str
     mastery_score: int = 0
+    mastery_level: int = 0
     current_node: Optional[str] = None
     completed_nodes_count: int = 0
     answer_attempt_count: int = 0
@@ -236,7 +243,9 @@ class StudentNodeProgressSummary(BaseModel):
     node_id: str
     subject_key: Optional[str] = None
     book_level: Optional[int] = None
+    learning_mode: str = "teach_me"
     status: str
+    mastery_level: int = 0
     attempt_count: int = 0
     correct_count: int = 0
     incorrect_count: int = 0
@@ -511,10 +520,13 @@ class PromoCodeListResponse(BaseModel):
 class ResumeShelfRequest(BaseModel):
     username: str
     shelf_category: str # e.g. "Math" (Optional, if we want to just resume general)
+    learning_mode: str = "teach_me"
 
 class ResumeShelfResponse(BaseModel):
     topic: str
     reason: str
+    learning_mode: str = "teach_me"
+    topic_label: Optional[str] = None
 
 class PlayerStatsRequest(BaseModel):
     username: str
@@ -531,6 +543,8 @@ class GraphNode(BaseModel):
     grade_level: int
     type: str # topic, subtopic, concept
     status: str # locked, available, completed, current
+    mastery_level: int = 0
+    is_tentative: bool = False
     parent: Optional[str] = None
     authoritative_link_count: int = 0
     approved_user_link_count: int = 0

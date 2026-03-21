@@ -19,6 +19,8 @@ def _normalize_subject_name(subject: str) -> str:
 
     # Remove grade suffixes/prefixes from selected bookshelf topics.
     # Examples: "Math 7", "Science Grade 5", "History grade-8".
+    raw = re.sub(r"\[.*?\]\s*$", "", raw).strip()
+    raw = re.sub(r"\bknowledge[_\-\s]*tracing\b", "", raw, flags=re.IGNORECASE).strip()
     raw = re.sub(r"\bgrade[_\-\s]*\d+\b", "", raw, flags=re.IGNORECASE).strip()
     raw = re.sub(r"\s+\d+\s*$", "", raw).strip()
 

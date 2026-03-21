@@ -148,6 +148,7 @@ var selection_subject_label: Label
 var selection_topic_label: Label
 var selection_hint_label: Label
 var selection_mode_label: Label
+var learning_mode_option: OptionButton
 var selection_clock := 0.0
 var profile_grade_level := 1
 var profile_role := "Student"
@@ -173,6 +174,8 @@ func _ready():
 	if gm:
 		network_manager.current_username = gm.player_username
 		profile_grade_level = clamp(int(round(float(gm.player_grade))), 1, BOOKS_PER_SUBJECT)
+		if str(gm.learning_mode).strip_edges() == "":
+			gm.learning_mode = "teach_me"
 
 	setup_full_library()
 	setup_ui()
@@ -377,6 +380,29 @@ func setup_ui():
 
 	content_vbox.add_child(HSeparator.new())
 
+	var mode_title = Label.new()
+	mode_title.text = "Learning Mode"
+	mode_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	mode_title.add_theme_font_size_override("font_size", 16)
+	content_vbox.add_child(mode_title)
+
+	learning_mode_option = OptionButton.new()
+	learning_mode_option.add_item("Teach Me")
+	learning_mode_option.set_item_metadata(0, "teach_me")
+	learning_mode_option.add_item("Knowledge Tracing")
+	learning_mode_option.set_item_metadata(1, "knowledge_tracing")
+	learning_mode_option.item_selected.connect(_on_learning_mode_selected)
+	content_vbox.add_child(learning_mode_option)
+	_apply_learning_mode(GameManager.learning_mode)
+
+	var mode_help = Label.new()
+	mode_help.text = "Teach Me follows guided lessons. Knowledge Tracing skips lessons and uses adaptive testing from the student's saved grade level."
+	mode_help.autowrap_mode = TextServer.AUTOWRAP_WORD
+	mode_help.modulate = Color(1.0, 1.0, 1.0, 0.72)
+	content_vbox.add_child(mode_help)
+
+	content_vbox.add_child(HSeparator.new())
+
 	# 2. Course Menu
 	var title = Label.new()
 	title.text = "COURSES"
@@ -473,6 +499,33 @@ func _create_img_tex(color, w, h):
 	var img = Image.create(w, h, false, Image.FORMAT_RGBA8)
 	img.fill(color)
 	return ImageTexture.create_from_image(img)
+
+
+func _selected_learning_mode() -> String:
+	if learning_mode_option == null or learning_mode_option.item_count == 0:
+		return "teach_me"
+	var metadata = learning_mode_option.get_item_metadata(learning_mode_option.selected)
+	return str(metadata) if metadata != null else "teach_me"
+
+
+func _apply_learning_mode(mode_value: String):
+	var resolved = mode_value.strip_edges().to_lower()
+	if resolved != "knowledge_tracing":
+		resolved = "teach_me"
+	GameManager.learning_mode = resolved
+
+	if learning_mode_option == null:
+		return
+
+	for index in range(learning_mode_option.item_count):
+		if str(learning_mode_option.get_item_metadata(index)) == resolved:
+			learning_mode_option.select(index)
+			break
+
+
+func _on_learning_mode_selected(index: int):
+	var selected_mode = str(learning_mode_option.get_item_metadata(index))
+	_apply_learning_mode(selected_mode)
 
 func fetch_stats():
 	var gm = get_node("/root/GameManager")
@@ -1743,6 +1796,7 @@ func _finish_logout_to_startup():
 	GameManager.player_username = "Player1"
 	GameManager.player_grade = -1
 	GameManager.manual_selection_mode = false
+	GameManager.learning_mode = "teach_me"
 	GameManager.password_cache = ""
 	get_tree().change_scene_to_file("res://scenes/Startup.tscn")
 
@@ -3298,7 +3352,10 @@ func _update_selection_panel(target, accent: Color):
 		selection_subject_label.text = subject + " textbook"
 		selection_topic_label.text = "Book " + str(level)
 
-		if GameManager.manual_selection_mode:
+		if GameManager.learning_mode == "knowledge_tracing":
+			selection_hint_label.text = "[Click] Start subject-wide adaptive testing"
+			selection_mode_label.text = "Knowledge tracing: uses the saved grade and samples the full " + subject + " graph"
+		elif GameManager.manual_selection_mode:
 			selection_hint_label.text = "[Click] Open this textbook"
 			selection_mode_label.text = "Manual mode: exact book selection"
 		else:
@@ -3307,9 +3364,14 @@ func _update_selection_panel(target, accent: Color):
 	else:
 		var category = str(target.get_meta("shelf_category"))
 		selection_subject_label.text = category + " shelf"
-		selection_topic_label.text = "Resume from your latest lesson in this subject"
-		selection_hint_label.text = "[Click] Continue where you left off"
-		selection_mode_label.text = "Shelf quick-launch"
+		if GameManager.learning_mode == "knowledge_tracing":
+			selection_topic_label.text = "Resume adaptive testing across the full subject graph"
+			selection_hint_label.text = "[Click] Continue knowledge tracing"
+			selection_mode_label.text = "Shelf quick-launch"
+		else:
+			selection_topic_label.text = "Resume from your latest lesson in this subject"
+			selection_hint_label.text = "[Click] Continue where you left off"
+			selection_mode_label.text = "Shelf quick-launch"
 
 func _update_focus_ring_material(accent: Color):
 	if focus_ring_material == null:
@@ -3382,7 +3444,8 @@ func resume_shelf(category):
 	var game_manager = get_node("/root/GameManager")
 	var data = {
 		"username": game_manager.player_username,
-		"shelf_category": category
+		"shelf_category": category,
+		"learning_mode": GameManager.learning_mode
 	}
 	NetworkManager.post_request("/resume_shelf", data, _on_resume_success, _on_resume_fail)
 

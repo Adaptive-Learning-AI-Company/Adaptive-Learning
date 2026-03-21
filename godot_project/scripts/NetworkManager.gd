@@ -128,7 +128,8 @@ func select_book(topic: String):
 		"username": current_username,
 		"topic": topic,
 		"manual_mode": GameManager.manual_selection_mode,
-		"session_grade_level": GameManager.player_grade
+		"session_grade_level": GameManager.player_grade,
+		"learning_mode": GameManager.learning_mode
 	})
 	
 	# USE NEW HEADER HELPER

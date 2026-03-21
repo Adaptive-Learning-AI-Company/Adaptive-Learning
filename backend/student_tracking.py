@@ -8,6 +8,9 @@ from sqlalchemy.orm import Session
 from .database import Player, StudentActivitySession, StudentNodeProgress, TopicProgress
 
 
+DEFAULT_LEARNING_MODE = "teach_me"
+
+
 MAX_ACTIVITY_GAP_SECONDS = int(os.getenv("TRACKING_ACTIVITY_GAP_CAP_SECONDS", "300"))
 MAX_NODE_GAP_SECONDS = int(os.getenv("TRACKING_NODE_GAP_CAP_SECONDS", "600"))
 
@@ -50,11 +53,18 @@ def _topic_metadata(topic_name: str | None) -> tuple[str | None, int | None]:
     return subject_key, level_value
 
 
-def _ensure_topic_progress(db: Session, player_id: int, topic_name: str, now: datetime | None = None) -> TopicProgress:
+def _ensure_topic_progress(
+    db: Session,
+    player_id: int,
+    topic_name: str,
+    now: datetime | None = None,
+    learning_mode: str = DEFAULT_LEARNING_MODE,
+) -> TopicProgress:
     now = now or _utcnow()
     progress = db.query(TopicProgress).filter(
         TopicProgress.player_id == player_id,
         TopicProgress.topic_name == topic_name,
+        TopicProgress.learning_mode == (learning_mode or DEFAULT_LEARNING_MODE),
     ).first()
     if progress:
         return progress
@@ -63,9 +73,11 @@ def _ensure_topic_progress(db: Session, player_id: int, topic_name: str, now: da
     progress = TopicProgress(
         player_id=player_id,
         topic_name=topic_name,
+        learning_mode=learning_mode or DEFAULT_LEARNING_MODE,
         subject_key=subject_key,
         book_level=book_level,
         content_grade_level=book_level,
+        mastery_level=0,
         mastery_score=0,
         status="NOT_STARTED",
         created_at=now,
@@ -83,12 +95,14 @@ def _ensure_node_progress(
     topic_name: str,
     node_id: str,
     now: datetime | None = None,
+    learning_mode: str = DEFAULT_LEARNING_MODE,
 ) -> StudentNodeProgress:
     now = now or _utcnow()
     progress = db.query(StudentNodeProgress).filter(
         StudentNodeProgress.player_id == player_id,
         StudentNodeProgress.topic_name == topic_name,
         StudentNodeProgress.node_id == node_id,
+        StudentNodeProgress.learning_mode == (learning_mode or DEFAULT_LEARNING_MODE),
     ).first()
     if progress:
         return progress
@@ -98,8 +112,10 @@ def _ensure_node_progress(
         player_id=player_id,
         topic_name=topic_name,
         node_id=node_id,
+        learning_mode=learning_mode or DEFAULT_LEARNING_MODE,
         subject_key=subject_key,
         book_level=book_level,
+        mastery_level=0,
         status="NOT_STARTED",
         created_at=now,
         updated_at=now,
@@ -109,6 +125,40 @@ def _ensure_node_progress(
     db.add(progress)
     db.flush()
     return progress
+
+
+def ensure_topic_progress(
+    db: Session,
+    player_id: int,
+    topic_name: str,
+    learning_mode: str = DEFAULT_LEARNING_MODE,
+    now: datetime | None = None,
+) -> TopicProgress:
+    return _ensure_topic_progress(
+        db,
+        player_id=player_id,
+        topic_name=topic_name,
+        now=now,
+        learning_mode=learning_mode,
+    )
+
+
+def ensure_node_progress(
+    db: Session,
+    player_id: int,
+    topic_name: str,
+    node_id: str,
+    learning_mode: str = DEFAULT_LEARNING_MODE,
+    now: datetime | None = None,
+) -> StudentNodeProgress:
+    return _ensure_node_progress(
+        db,
+        player_id=player_id,
+        topic_name=topic_name,
+        node_id=node_id,
+        now=now,
+        learning_mode=learning_mode,
+    )
 
 
 def _credit_node_learning_time(
@@ -235,9 +285,14 @@ def end_activity_session(db: Session, player: Player, token_jti: str | None) -> 
     return activity_session
 
 
-def record_topic_session_start(db: Session, player: Player, topic_name: str) -> TopicProgress:
+def record_topic_session_start(
+    db: Session,
+    player: Player,
+    topic_name: str,
+    learning_mode: str = DEFAULT_LEARNING_MODE,
+) -> TopicProgress:
     now = _utcnow()
-    topic_progress = _ensure_topic_progress(db, player.id, topic_name, now)
+    topic_progress = _ensure_topic_progress(db, player.id, topic_name, now, learning_mode=learning_mode)
     topic_progress.session_count = int(topic_progress.session_count or 0) + 1
     topic_progress.last_interaction_at = now
     topic_progress.updated_at = now
@@ -251,16 +306,31 @@ def touch_current_node(
     player: Player,
     topic_name: str,
     node_id: str,
+    learning_mode: str = DEFAULT_LEARNING_MODE,
 ) -> StudentNodeProgress:
     now = _utcnow()
-    topic_progress = _ensure_topic_progress(db, player.id, topic_name, now)
+    topic_progress = _ensure_topic_progress(db, player.id, topic_name, now, learning_mode=learning_mode)
 
     previous_node_progress = None
     if topic_progress.current_node and topic_progress.current_node != node_id:
-        previous_node_progress = _ensure_node_progress(db, player.id, topic_name, topic_progress.current_node, now)
+        previous_node_progress = _ensure_node_progress(
+            db,
+            player.id,
+            topic_name,
+            topic_progress.current_node,
+            now,
+            learning_mode=learning_mode,
+        )
         _credit_node_learning_time(topic_progress, previous_node_progress, now)
 
-    node_progress = _ensure_node_progress(db, player.id, topic_name, node_id, now)
+    node_progress = _ensure_node_progress(
+        db,
+        player.id,
+        topic_name,
+        node_id,
+        now,
+        learning_mode=learning_mode,
+    )
     if topic_progress.current_node == node_id:
         _credit_node_learning_time(topic_progress, node_progress, now)
     node_progress.first_seen_at = node_progress.first_seen_at or now
@@ -289,17 +359,32 @@ def record_answer_evaluation(
     problem: str | None,
     answer: str | None,
     feedback: str | None,
+    learning_mode: str = DEFAULT_LEARNING_MODE,
 ) -> tuple[TopicProgress, StudentNodeProgress]:
     now = _utcnow()
-    topic_progress = _ensure_topic_progress(db, player.id, topic_name, now)
+    topic_progress = _ensure_topic_progress(db, player.id, topic_name, now, learning_mode=learning_mode)
 
     resolved_node_id = node_id or topic_progress.current_node or topic_name
-    node_progress = _ensure_node_progress(db, player.id, topic_name, resolved_node_id, now)
+    node_progress = _ensure_node_progress(
+        db,
+        player.id,
+        topic_name,
+        resolved_node_id,
+        now,
+        learning_mode=learning_mode,
+    )
 
     if topic_progress.current_node != resolved_node_id:
-        touch_current_node(db, player, topic_name, resolved_node_id)
-        topic_progress = _ensure_topic_progress(db, player.id, topic_name, now)
-        node_progress = _ensure_node_progress(db, player.id, topic_name, resolved_node_id, now)
+        touch_current_node(db, player, topic_name, resolved_node_id, learning_mode=learning_mode)
+        topic_progress = _ensure_topic_progress(db, player.id, topic_name, now, learning_mode=learning_mode)
+        node_progress = _ensure_node_progress(
+            db,
+            player.id,
+            topic_name,
+            resolved_node_id,
+            now,
+            learning_mode=learning_mode,
+        )
 
     _credit_node_learning_time(topic_progress, node_progress, now)
 
@@ -345,16 +430,25 @@ def mark_node_mastered(
     player: Player,
     topic_name: str,
     node_id: str | None,
+    learning_mode: str = DEFAULT_LEARNING_MODE,
 ) -> tuple[TopicProgress, StudentNodeProgress] | tuple[None, None]:
     if not node_id:
         return None, None
 
     now = _utcnow()
-    topic_progress = _ensure_topic_progress(db, player.id, topic_name, now)
-    node_progress = _ensure_node_progress(db, player.id, topic_name, node_id, now)
+    topic_progress = _ensure_topic_progress(db, player.id, topic_name, now, learning_mode=learning_mode)
+    node_progress = _ensure_node_progress(
+        db,
+        player.id,
+        topic_name,
+        node_id,
+        now,
+        learning_mode=learning_mode,
+    )
 
     _credit_node_learning_time(topic_progress, node_progress, now)
 
+    node_progress.mastery_level = 10
     node_progress.status = "COMPLETED"
     node_progress.completed_at = node_progress.completed_at or now
     node_progress.last_seen_at = now

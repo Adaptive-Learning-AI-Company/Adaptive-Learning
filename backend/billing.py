@@ -276,9 +276,9 @@ def _default_hosted_model_selection() -> tuple[str, str, str]:
 
 def _default_hosted_priority_selection() -> tuple[bool, bool, bool]:
     teacher_model, verifier_model, fast_model = _default_hosted_model_selection()
-    default_teacher = _env_bool("OPENAI_MODEL_PRIORITY", False) and model_supports_priority(teacher_model)
-    default_verifier = _env_bool("OPENAI_VERIFIER_MODEL_PRIORITY", False) and model_supports_priority(verifier_model)
-    default_fast = _env_bool("OPENAI_FAST_MODEL_PRIORITY", False) and model_supports_priority(fast_model)
+    default_teacher = _env_bool("OPENAI_MODEL_PRIORITY", True) and model_supports_priority(teacher_model)
+    default_verifier = _env_bool("OPENAI_VERIFIER_MODEL_PRIORITY", True) and model_supports_priority(verifier_model)
+    default_fast = _env_bool("OPENAI_FAST_MODEL_PRIORITY", True) and model_supports_priority(fast_model)
     return default_teacher, default_verifier, default_fast
 
 

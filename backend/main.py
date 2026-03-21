@@ -14,6 +14,20 @@ from .profile_security import encrypt_profile_secret, mask_secret
 from .billing import build_billing_status, build_hosted_model_config, create_checkout_session as create_billing_checkout_session, create_billing_portal_session, handle_stripe_webhook, assert_tutoring_access, increment_tutor_turn_usage, set_hosted_models
 from .access_grants import create_manual_access_grant, create_promo_code, list_access_grants, list_promo_codes, redeem_promo_code, revoke_access_grant, revoke_promo_code, serialize_access_grant, serialize_promo_code
 from .node_links import get_node_link_count_map, get_node_links_for_node, list_reviewable_node_links, review_node_link, serialize_node_link, submit_node_link
+from .knowledge_tracing import (
+    KNOWLEDGE_TRACING_MODE,
+    TEACH_ME_MODE,
+    canonical_subject_for_topic,
+    get_subject_full_mastery_node_ids,
+    get_topic_progress as get_mode_topic_progress,
+    is_knowledge_tracing_mode,
+    learning_mode_label,
+    normalize_learning_mode,
+    resolve_topic_for_mode,
+    select_next_teach_me_node,
+    select_next_tracing_node,
+    topic_label_for_mode,
+)
 from .student_tracking import end_activity_session, record_topic_session_start, start_activity_session, touch_activity_session, touch_current_node
 from .teacher_portal import assert_teacher_can_view_student, build_student_progress_detail, create_teacher_request, get_teacher_dashboard_payload, list_teacher_links_for_user, respond_to_teacher_request, revoke_teacher_link, serialize_teacher_link
 import uuid
@@ -142,6 +156,89 @@ def _apply_topic_progress_metadata(progress: TopicProgress, topic_name: str):
     if level_value is not None:
         progress.book_level = level_value
         progress.content_grade_level = level_value
+
+
+def _resolved_learning_mode(mode_value: str | None) -> str:
+    return normalize_learning_mode(mode_value)
+
+
+def _resolved_topic_name(topic_name: str, learning_mode: str) -> str:
+    return resolve_topic_for_mode(topic_name, learning_mode)
+
+
+def _session_target_grade(
+    player: Player,
+    requested_topic: str,
+    learning_mode: str,
+    session_grade_level: int | None = None,
+) -> int:
+    if session_grade_level is not None:
+        return int(session_grade_level)
+
+    if is_knowledge_tracing_mode(learning_mode):
+        return int(player.grade_level or 0)
+
+    topic_grade_match = re.search(r"\d+", requested_topic or "")
+    if topic_grade_match:
+        try:
+            return int(topic_grade_match.group())
+        except ValueError:
+            return int(player.grade_level or 0)
+    return int(player.grade_level or 0)
+
+
+def _build_navigation_snapshot(
+    db: Session,
+    player: Player,
+    topic_name: str,
+    learning_mode: str,
+    target_grade: int | None,
+) -> dict:
+    from .knowledge_graph import get_graph
+
+    snapshot: dict = {"current_action": "IDLE", "learning_mode": learning_mode}
+    progress = get_mode_topic_progress(db, player.id, topic_name, learning_mode)
+    if not progress:
+        return snapshot
+
+    snapshot["mastery"] = progress.mastery_score
+    snapshot["mastery_level"] = int(progress.mastery_level or 0)
+    snapshot["topic_label"] = topic_label_for_mode(topic_name, learning_mode)
+
+    kg = get_graph(topic_name)
+    if progress.current_node:
+        current_node = kg.get_node(progress.current_node)
+        if current_node:
+            snapshot["current_node_label"] = current_node.label
+
+    completed_nodes = list(progress.completed_nodes) if progress.completed_nodes else []
+    if completed_nodes:
+        previous_node = kg.get_node(completed_nodes[-1])
+        if previous_node:
+            snapshot["prev_node_label"] = previous_node.label
+
+    next_node = None
+    if is_knowledge_tracing_mode(learning_mode):
+        next_node = select_next_tracing_node(
+            db,
+            player_id=player.id,
+            topic_name=topic_name,
+            target_grade=target_grade,
+            current_node_id=progress.current_node,
+        )
+    else:
+        next_node = select_next_teach_me_node(
+            db,
+            player_id=player.id,
+            topic_name=topic_name,
+            target_grade=target_grade,
+            current_node_id=progress.current_node,
+        )
+
+    if next_node:
+        snapshot["next_node_label"] = next_node.label
+
+    return snapshot
 
 
 def _build_profile_response(player: Player) -> ProfileResponse:
@@ -1152,75 +1249,77 @@ async def select_book(request: BookSelectRequest, current_user: Player = Depends
         _ensure_player_runtime_defaults(db, player)
 
     assert_tutoring_access(db, player)
+    learning_mode = _resolved_learning_mode(request.learning_mode)
+    resolved_topic = _resolved_topic_name(request.topic, learning_mode)
+    target_grade = _session_target_grade(
+        player,
+        requested_topic=request.topic,
+        learning_mode=learning_mode,
+        session_grade_level=request.session_grade_level,
+    )
+
     touch_activity_session(
         db,
         current_user,
         token_jti=getattr(current_user, "_token_jti", None),
-        topic_name=request.topic,
+        topic_name=resolved_topic,
         increment_request=False,
     )
-    record_topic_session_start(db, player, request.topic)
+    record_topic_session_start(db, player, resolved_topic, learning_mode=learning_mode)
 
-    progress = db.query(TopicProgress).filter(
-        TopicProgress.player_id == player.id,
-        TopicProgress.topic_name == request.topic
-    ).first()
-    
-    resume_summary = None
+    progress = get_mode_topic_progress(db, player.id, resolved_topic, learning_mode)
+    if progress is None:
+        raise HTTPException(status_code=500, detail="Unable to initialize progress for this topic.")
+
+    progress.learning_mode = learning_mode
+    _apply_topic_progress_metadata(progress, resolved_topic)
+    progress.content_grade_level = target_grade
+
+    topic_label = topic_label_for_mode(request.topic, learning_mode)
     adaptive_suggestion = ""
-    
-    # CRITICAL: Use Session Grade if provided (Transient Session Support)
-    current_grade_level = player.grade_level
-    if request.session_grade_level is not None:
-        current_grade_level = request.session_grade_level
-
-    # 3. Adaptive Logic: Check Grade Level
-    # Extract number from topic string (e.g. "History 1" -> 1)
-    import re
-    topic_grade_match = re.search(r'\d+', request.topic)
-    if topic_grade_match:
-        topic_grade = int(topic_grade_match.group())
-        
-        # Determine gap
-        grade_diff = current_grade_level - topic_grade
-        
-        # 1. Manual Mode: Always accept.
-        if request.manual_mode:
-            adaptive_suggestion = ""
-            
-        # 2. Lower Grade (Review Mode)
-        elif grade_diff > 0:
-            adaptive_suggestion = f"\n\n[System]: Review Mode initialized. You are Grade {current_grade_level}, reviewing Grade {topic_grade} material."
-            
-        # 4. Higher Grade (Challenge?)
-        elif grade_diff < -2:
-             adaptive_suggestion = f"\n\n[System]: Challenge Mode. You are Grade {current_grade_level} attempting Grade {topic_grade}. Good luck!"
-             
-    # CRITICAL: Logic update to accept string from UI
-    effective_grade = f"Grade {current_grade_level}"
-    if topic_grade_match:
-         if request.manual_mode or (current_grade_level != topic_grade):
-             effective_grade = f"Grade {topic_grade_match.group()}"
-
-    if not progress:
-        now = datetime.utcnow()
-        progress = TopicProgress(
-            player_id=player.id,
-            topic_name=request.topic,
-            mastery_score=0,
-            created_at=now,
-            updated_at=now,
-            last_interaction_at=now,
-        )
-        _apply_topic_progress_metadata(progress, request.topic)
-        db.add(progress)
-        db.commit()
-        db.refresh(progress)
+    resume_summary = None
+    if is_knowledge_tracing_mode(learning_mode):
+        if int(progress.answer_attempt_count or 0) > 0 or progress.current_node:
+            resume_summary = (
+                "Resuming "
+                + topic_label
+                + ". Subject mastery level: "
+                + str(int(progress.mastery_level or 0))
+                + "/10."
+            )
+        else:
+            resume_summary = (
+                "Starting "
+                + topic_label
+                + ". Adaptive testing is using the saved grade level of Grade "
+                + str(target_grade)
+                + "."
+            )
     else:
-        _apply_topic_progress_metadata(progress, request.topic)
-        resume_summary = f"Continuing {request.topic}. Mastery: {progress.mastery_score}%"
+        topic_grade_match = re.search(r"\d+", request.topic)
+        current_grade_level = int(player.grade_level or 0)
+        if request.session_grade_level is not None:
+            current_grade_level = int(request.session_grade_level)
+        if topic_grade_match:
+            topic_grade = int(topic_grade_match.group())
+            grade_diff = current_grade_level - topic_grade
+            if not request.manual_mode and grade_diff > 0:
+                adaptive_suggestion = (
+                    f"\n\n[System]: Review Mode initialized. You are Grade {current_grade_level}, reviewing Grade {topic_grade} material."
+                )
+            elif not request.manual_mode and grade_diff < -2:
+                adaptive_suggestion = (
+                    f"\n\n[System]: Challenge Mode. You are Grade {current_grade_level} attempting Grade {topic_grade}. Good luck!"
+                )
+        if int(progress.answer_attempt_count or 0) > 0 or progress.current_node or progress.completed_nodes:
+            resume_summary = f"Continuing {request.topic}. Mastery: {progress.mastery_score}%"
+        else:
+            resume_summary = f"Starting {request.topic}."
 
-    full_summary = (resume_summary or f"Starting {request.topic}.") + adaptive_suggestion
+    full_summary = (resume_summary or f"Starting {topic_label}.") + adaptive_suggestion
+    effective_grade = f"Grade {target_grade}"
+    db.commit()
+    db.refresh(progress)
 
     # 4. Initialize Graph Session
     session_id = str(uuid.uuid4())
@@ -1228,7 +1327,7 @@ async def select_book(request: BookSelectRequest, current_user: Player = Depends
     
     initial_state = {
         "session_id": session_id,
-        "topic": request.topic,
+        "topic": resolved_topic,
         "grade_level": effective_grade, 
         "location": player.location,
         "learning_style": player.learning_style,
@@ -1239,46 +1338,21 @@ async def select_book(request: BookSelectRequest, current_user: Player = Depends
         "last_problem": "",
         "next_dest": "GENERAL_CHAT",
         "role": _effective_learning_role(player), # Treat admins as teacher-capable in tutoring flows
-        "view_as_student": False # Default
+        "view_as_student": False, # Default
+        "learning_mode": learning_mode,
     }
     
     # In a real heavy app, we'd load 'last_state_snapshot' from DB into graph
     # But for now we just spin up a session.
     await graph.aupdate_state(config, initial_state)
     
-    # [NEW] Inject Navigation Context for Initial Load
-    state_snapshot = {"current_action": "IDLE", "mastery": progress.mastery_score}
-    try:
-        from .knowledge_graph import get_graph
-        kg_subj = get_graph(request.topic)
-        
-        # Current
-        if progress.current_node:
-            n = kg_subj.get_node(progress.current_node)
-            if n: state_snapshot["current_node_label"] = n.label
-            
-        # Previous
-        if progress.completed_nodes:
-             prev_id = progress.completed_nodes[-1]
-             prev_n = kg_subj.get_node(prev_id)
-             if prev_n: state_snapshot["prev_node_label"] = prev_n.label
-             
-        # Next (Suggestion)
-        completed_list = list(progress.completed_nodes) if progress.completed_nodes else []
-        temp_completed = list(completed_list)
-        if progress.current_node and progress.current_node not in temp_completed:
-            temp_completed.append(progress.current_node)
-        
-        nav_options = navigator.get_next_options(temp_completed, player.grade_level)
-        if nav_options:
-            next_path = nav_options[0]
-            if "->" in next_path:
-                state_snapshot["next_node_label"] = next_path.split("->")[-1]
-            else:
-                state_snapshot["next_node_label"] = next_path
-                
-    except Exception as e:
-        print(f"Error injecting nav context in select_book: {e}")
+    state_snapshot = _build_navigation_snapshot(
+        db,
+        player=player,
+        topic_name=resolved_topic,
+        learning_mode=learning_mode,
+        target_grade=target_grade,
+    )
     
     return BookSelectResponse(
         session_id=session_id,
@@ -1286,6 +1360,10 @@ async def select_book(request: BookSelectRequest, current_user: Player = Depends
         xp=player.xp,
         level=player.level,
         mastery=progress.mastery_score,
+        mastery_level=int(progress.mastery_level or 0),
+        learning_mode=learning_mode,
+        resolved_topic=resolved_topic,
+        topic_label=topic_label,
         history_summary=full_summary,
         state_snapshot=state_snapshot,
         role=_effective_learning_role(player) # Treat admins as teacher-capable in classroom UI
@@ -1303,13 +1381,14 @@ async def chat(request: ChatRequest, current_user: Player = Depends(get_current_
         raise HTTPException(status_code=403, detail="Session access denied.")
 
     assert_tutoring_access(db, current_user)
+    learning_mode = _resolved_learning_mode(current_state.values.get("learning_mode"))
     
     inputs = {
         "messages": [HumanMessage(content=request.message)],
         "view_as_student": request.view_as_student # [NEW]
     }
     
-    if request.grade_override is not None:
+    if request.grade_override is not None and not is_knowledge_tracing_mode(learning_mode):
         inputs["grade_level"] = f"Grade {request.grade_override}"
         print(f"[API] Grade Override Applied: {inputs['grade_level']}")
 
@@ -1325,54 +1404,32 @@ async def chat(request: ChatRequest, current_user: Player = Depends(get_current_
     # Extract mastery if updated
     mastery_update = result.get("mastery")
     
-    snapshot = {"current_action": current_action}
+    snapshot = {
+        "current_action": current_action,
+        "learning_mode": learning_mode,
+        "topic_label": topic_label_for_mode(current_state.values.get("topic", ""), learning_mode),
+    }
     if mastery_update is not None:
         snapshot["mastery"] = mastery_update
     
-    # [NEW] Inject Navigation Context (Current/Prev/Next)
-    # This adds slight overhead but is required for UI
     try:
         player = db.query(Player).filter(Player.username == current_state.values.get("username")).first()
         topic_name = current_state.values.get("topic")
         if player and topic_name:
-            prog = db.query(TopicProgress).filter(TopicProgress.player_id == player.id, TopicProgress.topic_name == topic_name).first()
-            if prog:
-                # Current
-                if prog.current_node:
-                    from .knowledge_graph import get_graph
-                    kg_subj = get_graph(topic_name)
-                    n = kg_subj.get_node(prog.current_node)
-                    if n: snapshot["current_node_label"] = n.label
-                
-                # Previous (Last master topic)
-                if prog.completed_nodes:
-                     prev_id = prog.completed_nodes[-1]
-                     kg_subj = get_graph(topic_name)
-                     prev_n = kg_subj.get_node(prev_id)
-                     if prev_n: snapshot["prev_node_label"] = prev_n.label
-                     
-                # Next (Suggestion)
-                completed_list = list(prog.completed_nodes) if prog.completed_nodes else []
-                # Use current node as marking "active", so next is usually AFTER current completes.
-                # But UI asks for "Next Topic" which implies "What is coming up?".
-                # If we are working on Current, Next is the one after Current.
-                # Temporarily add current to completed to see what comes next?
-                temp_completed = list(completed_list)
-                if prog.current_node and prog.current_node not in temp_completed:
-                    temp_completed.append(prog.current_node)
-                
-                nav_options = navigator.get_next_options(temp_completed, player.grade_level)
-                if nav_options:
-                    # Parse label from ID? ID is Path. Label is last part usually?
-                    # Or get node.
-                    # navigator return paths.
-                    next_path = nav_options[0]
-                    # Format: ...->Label
-                    if "->" in next_path:
-                        snapshot["next_node_label"] = next_path.split("->")[-1]
-                    else:
-                        snapshot["next_node_label"] = next_path
-                        
+            target_grade = _session_target_grade(
+                player,
+                requested_topic=topic_name,
+                learning_mode=learning_mode,
+            )
+            snapshot.update(
+                _build_navigation_snapshot(
+                    db,
+                    player=player,
+                    topic_name=topic_name,
+                    learning_mode=learning_mode,
+                    target_grade=target_grade,
+                )
+            )
     except Exception as e:
         print(f"Error injecting nav context: {e}")
 
@@ -1380,10 +1437,7 @@ async def chat(request: ChatRequest, current_user: Player = Depends(get_current_
     topic_name = current_state.values.get("topic")
     current_node_id = None
     if topic_name:
-        current_progress = db.query(TopicProgress).filter(
-            TopicProgress.player_id == current_user.id,
-            TopicProgress.topic_name == topic_name,
-        ).first()
+        current_progress = get_mode_topic_progress(db, current_user.id, topic_name, learning_mode)
         if current_progress:
             current_node_id = current_progress.current_node
     touch_activity_session(
@@ -1575,7 +1629,12 @@ async def resume_shelf(request: ResumeShelfRequest, current_user: Player = Depen
     if not player:
         raise HTTPException(status_code=404, detail="Player not found")
 
-    query = db.query(TopicProgress).filter(TopicProgress.player_id == player.id)
+    learning_mode = _resolved_learning_mode(request.learning_mode)
+    shelf_topic = request.shelf_category if request.shelf_category else "Science"
+    query = db.query(TopicProgress).filter(
+        TopicProgress.player_id == player.id,
+        TopicProgress.learning_mode == learning_mode,
+    )
     if request.shelf_category:
         subject_key = _topic_metadata_from_name(request.shelf_category)[0]
         prefixes = _subject_topic_prefixes(request.shelf_category)
@@ -1593,44 +1652,56 @@ async def resume_shelf(request: ResumeShelfRequest, current_user: Player = Depen
         TopicProgress.mastery_score.desc(),
     ).first()
     if active_progress:
-        return ResumeShelfResponse(topic=active_progress.topic_name, reason=f"Resuming {active_progress.topic_name}...")
+        return ResumeShelfResponse(
+            topic=active_progress.topic_name,
+            reason=f"Resuming {topic_label_for_mode(active_progress.topic_name, learning_mode)}...",
+            learning_mode=learning_mode,
+            topic_label=topic_label_for_mode(active_progress.topic_name, learning_mode),
+        )
 
-    last_completed = query.filter(TopicProgress.status == "COMPLETED").order_by(
-        TopicProgress.completed_at.desc(),
+    recent_progress = query.order_by(
+        TopicProgress.last_interaction_at.desc(),
         TopicProgress.updated_at.desc(),
         TopicProgress.id.desc(),
     ).first()
+    target_topic = recent_progress.topic_name if recent_progress else _resolved_topic_name(shelf_topic, learning_mode)
+    target_grade = _session_target_grade(player, shelf_topic, learning_mode)
 
-    target_topic = ""
-    reason = ""
-    if last_completed:
-        completed_nodes = list(last_completed.completed_nodes) if last_completed.completed_nodes else []
-        options = navigator.get_next_options(completed_nodes, player.grade_level)
-        if not options:
-            reason = "Curriculum complete!"
-            target_topic = request.shelf_category if request.shelf_category else "Review"
-        elif len(options) == 1:
-            target_topic = request.shelf_category if request.shelf_category else options[0].split("->")[0]
-            if request.shelf_category:
-                target_topic = request.shelf_category
-            reason = f"Next logical topic: {options[0]}"
-        else:
-            if request.shelf_category:
-                target_topic = request.shelf_category
-            else:
-                target_topic = options[0]
-            reason = f"Suggested next topic: {options[0]}"
+    if is_knowledge_tracing_mode(learning_mode):
+        next_node = select_next_tracing_node(
+            db,
+            player_id=player.id,
+            topic_name=target_topic,
+            target_grade=target_grade,
+            current_node_id=recent_progress.current_node if recent_progress else None,
+        )
+        reason = (
+            "Continuing knowledge tracing with "
+            + next_node.label
+            if next_node is not None
+            else "Knowledge tracing is ready for review."
+        )
     else:
-        cat = request.shelf_category if request.shelf_category else "Science"
-        options = navigator.get_next_options([], player.grade_level, subject_filter=cat)
-        if options:
-            target_topic = cat
-            reason = f"Starting {cat} curriculum: {options[0]}"
+        next_node = select_next_teach_me_node(
+            db,
+            player_id=player.id,
+            topic_name=target_topic,
+            target_grade=target_grade,
+            current_node_id=recent_progress.current_node if recent_progress else None,
+        )
+        if next_node is not None:
+            reason = "Next logical topic: " + next_node.label
+        elif get_subject_full_mastery_node_ids(db, player.id, target_topic):
+            reason = "Curriculum complete! Review is available."
         else:
-            target_topic = cat
-            reason = "Default start."
+            reason = "Starting curriculum from the beginning."
 
-    return ResumeShelfResponse(topic=target_topic, reason=reason)
+    return ResumeShelfResponse(
+        topic=target_topic,
+        reason=reason,
+        learning_mode=learning_mode,
+        topic_label=topic_label_for_mode(target_topic, learning_mode),
+    )
 @app.post("/get_topic_graph", response_model=GraphDataResponse)
 async def get_topic_graph(request: GraphDataRequest, current_user: Player = Depends(get_current_user), db: Session = Depends(get_db)):
     _ensure_current_user_matches(current_user, request.username)
@@ -1645,21 +1716,25 @@ async def get_topic_graph(request: GraphDataRequest, current_user: Player = Depe
     player = db.query(Player).filter(Player.username == request.username).first()
     completed_set = set()
     current_node_id = ""
+    current_learning_mode = TEACH_ME_MODE
+    mastery_map: dict[str, int] = {}
     
     if player:
-        # Determine strict subject name (e.g. "math" -> "Math") via TopicProgress usually requiring capitalization
-        # But our DB search handles that if we use request.topic directly (assuming UI sends correct case)
-        # Or search robustly.
         prog = db.query(TopicProgress).filter(
             TopicProgress.player_id == player.id,
-            TopicProgress.topic_name == request.topic
-        ).first()
+            TopicProgress.topic_name == request.topic,
+        ).order_by(TopicProgress.updated_at.desc()).first()
         
         if prog:
-            if prog.completed_nodes:
-                completed_set = set(prog.completed_nodes)
+            current_learning_mode = _resolved_learning_mode(prog.learning_mode)
+            completed_set = set(get_subject_full_mastery_node_ids(db, player.id, request.topic))
             if prog.current_node:
                 current_node_id = prog.current_node
+        else:
+            completed_set = set(get_subject_full_mastery_node_ids(db, player.id, request.topic))
+
+        from .knowledge_tracing import get_subject_node_mastery_map
+        mastery_map = get_subject_node_mastery_map(db, player.id, request.topic)
     
     # Build Node List
     result_nodes = []
@@ -1710,6 +1785,8 @@ async def get_topic_graph(request: GraphDataRequest, current_user: Player = Depe
             grade_level=node_data.get("grade_level", 0),
             type=node_data.get("type", "concept"),
             status=status,
+            mastery_level=max(0, min(10, int(mastery_map.get(node_id, 0)))),
+            is_tentative=0 < int(mastery_map.get(node_id, 0)) < 10,
             parent=parent_id,
             authoritative_link_count=link_counts.get(node_id, {}).get("authoritative_link_count", 0),
             approved_user_link_count=link_counts.get(node_id, {}).get("approved_user_link_count", 0),
@@ -1718,8 +1795,19 @@ async def get_topic_graph(request: GraphDataRequest, current_user: Player = Depe
         # Late pass for "Available"? 
     # Calling get_next_learnable_nodes is expensive if we do it for all?
     # Just do it once.
-    candidates = kg.get_next_learnable_nodes(list(completed_set))
-    candidate_ids = set([c.id for c in candidates])
+    target_grade = int(player.grade_level or 0) if player else None
+    if current_learning_mode == KNOWLEDGE_TRACING_MODE and player:
+        candidate = select_next_tracing_node(
+            db,
+            player_id=player.id,
+            topic_name=request.topic,
+            target_grade=target_grade,
+            current_node_id=current_node_id,
+        )
+        candidate_ids = {candidate.id} if candidate else set()
+    else:
+        candidates = kg.get_next_learnable_nodes(list(completed_set), target_grade=target_grade)
+        candidate_ids = set([c.id for c in candidates])
     
     for n in result_nodes:
         if n.status == "locked" and n.id in candidate_ids:
@@ -1734,7 +1822,12 @@ async def set_current_node(request: SetCurrentNodeRequest, current_user: Player 
     player = db.query(Player).filter(Player.username == request.username).first()
     if not player:
         raise HTTPException(status_code=404, detail="Player not found")
-    touch_current_node(db, player, request.topic, request.node_id)
+    progress = db.query(TopicProgress).filter(
+        TopicProgress.player_id == player.id,
+        TopicProgress.topic_name == request.topic,
+    ).order_by(TopicProgress.updated_at.desc()).first()
+    learning_mode = _resolved_learning_mode(progress.learning_mode if progress else TEACH_ME_MODE)
+    touch_current_node(db, player, request.topic, request.node_id, learning_mode=learning_mode)
     touch_activity_session(
         db,
         current_user,

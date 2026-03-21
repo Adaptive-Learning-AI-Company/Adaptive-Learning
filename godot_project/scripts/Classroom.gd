@@ -24,7 +24,10 @@ var custom_loading_message = ""
 var view_as_student: bool = false
 var btn_mode_toggle: CheckButton
 var opt_grade_override: OptionButton
+var lbl_grade_override: Label
 var current_grade_level: int = 5 # Default, should sync from session
+var current_learning_mode := "teach_me"
+var action_buttons := []
 
 
 
@@ -48,6 +51,7 @@ func _ready():
 	var gm = get_node("/root/GameManager")
 	if gm:
 		NetworkManager.current_username = gm.player_username
+		current_learning_mode = str(gm.learning_mode)
 	
 	# Camera Setup (Since we removed player)
 	var cam = Camera3D.new()
@@ -185,6 +189,7 @@ func setup_ui():
 		btn.custom_minimum_size = Vector2(0, 40)
 		btn.pressed.connect(func(): _on_submit(a))
 		sidebar.add_child(btn)
+		action_buttons.append(btn)
 		
 	# Spacer
 	var spacer2 = Control.new()
@@ -258,11 +263,11 @@ func setup_ui():
 	sidebar.add_child(HSeparator.new())
 	
 	# Content Grade Override
-	var lbl_grade = Label.new()
-	lbl_grade.text = "Content Grade:"
-	lbl_grade.add_theme_font_size_override("font_size", 12)
-	lbl_grade.modulate = Color(0.8, 0.8, 0.8)
-	sidebar.add_child(lbl_grade)
+	lbl_grade_override = Label.new()
+	lbl_grade_override.text = "Content Grade:"
+	lbl_grade_override.add_theme_font_size_override("font_size", 12)
+	lbl_grade_override.modulate = Color(0.8, 0.8, 0.8)
+	sidebar.add_child(lbl_grade_override)
 	
 	opt_grade_override = OptionButton.new()
 	opt_grade_override.add_item("Default (Profile)", 0)
@@ -279,6 +284,8 @@ func setup_ui():
 	btn_mode_toggle.visible = false
 	btn_mode_toggle.toggled.connect(_on_mode_toggled)
 	sidebar.add_child(btn_mode_toggle)
+
+	_refresh_learning_mode_ui()
 
 		
 	# [RIGHT] Chat Interface (80%)
@@ -333,6 +340,26 @@ func setup_simplified_ui(parent):
 		btn.pressed.connect(func(): _on_submit(a))
 		grid.add_child(btn)
 
+
+func _refresh_learning_mode_ui():
+	if current_learning_mode == "knowledge_tracing":
+		var tracing_labels = ["Adaptive Quiz", "Another Check", "Challenge Me", "Review Node"]
+		for index in range(min(action_buttons.size(), tracing_labels.size())):
+			action_buttons[index].text = tracing_labels[index]
+		if lbl_grade_override:
+			lbl_grade_override.text = "Content Grade: profile-locked"
+		if opt_grade_override:
+			opt_grade_override.disabled = true
+			opt_grade_override.select(0)
+	else:
+		var teach_me_labels = ["Teach Me", "Quiz Me", "Explain", "Examples"]
+		for index in range(min(action_buttons.size(), teach_me_labels.size())):
+			action_buttons[index].text = teach_me_labels[index]
+		if lbl_grade_override:
+			lbl_grade_override.text = "Content Grade:"
+		if opt_grade_override:
+			opt_grade_override.disabled = false
+
 func _input(event):
 	# Shortcut to focus chat
 	if event.is_action_pressed("ui_accept") and not input_field.has_focus():
@@ -381,19 +408,29 @@ func _stop_loading():
 
 func _on_submit(new_text):
 	if new_text.strip_edges() == "": return
+
+	var outbound_text = new_text
+	if current_learning_mode == "knowledge_tracing":
+		match new_text:
+			"Teach Me", "Quiz Me", "Adaptive Quiz":
+				outbound_text = "Quiz me on the next concept."
+			"Explain", "Another Check", "Review Node":
+				outbound_text = "Give me another question on this concept."
+			"Examples", "Challenge Me":
+				outbound_text = "Challenge me with a slightly harder question on this concept."
 	
 	input_field.text = ""
 	
-	append_chat("You", new_text)
+	append_chat("You", outbound_text)
 	
 	_start_loading()
 	
 	# Check for Grade / Role Override
 	var override_val = -1
-	if opt_grade_override and opt_grade_override.selected > 0:
+	if current_learning_mode != "knowledge_tracing" and opt_grade_override and opt_grade_override.selected > 0:
 		override_val = opt_grade_override.get_selected_id()
 		
-	NetworkManager.send_message(new_text, view_as_student, override_val)
+	NetworkManager.send_message(outbound_text, view_as_student, override_val)
 
 func _on_agent_response(response, action, state: Dictionary):
 	_stop_loading()
@@ -417,6 +454,12 @@ func _on_session_ready(data):
 	var summary = data.get("history_summary")
 	if summary == null:
 		summary = ""
+
+	current_learning_mode = str(data.get("learning_mode", current_learning_mode))
+	if data.has("resolved_topic"):
+		current_topic = str(data["resolved_topic"])
+	var topic_label = str(data.get("topic_label", current_topic))
+	_refresh_learning_mode_ui()
 	
 	# Initial mastery
 	update_gauge(data.get("mastery", 0))
@@ -436,15 +479,23 @@ func _on_session_ready(data):
 	# Stop "Initializing" ticker now that session is ready
 	_stop_loading()
 	
+	if lbl_current_topic and topic_label != "" and (not state or not state.has("current_node_label")):
+		lbl_current_topic.text = "Current: " + topic_label
+
 	# Proactive Trigger if mastery is 0 (New Topic)
 	if data.get("mastery", 0) == 0:
 		var override_val = -1
-		if opt_grade_override and opt_grade_override.selected > 0: override_val = opt_grade_override.get_selected_id()
-		
-		# Start ticker for the initial lesson generation
-		_start_loading("Agent is preparing the lesson...")
-		append_chat("System", "Agent is preparing the lesson, please wait...")
-		NetworkManager.send_message("Please start the lesson.", view_as_student, override_val)
+		if current_learning_mode != "knowledge_tracing" and opt_grade_override and opt_grade_override.selected > 0:
+			override_val = opt_grade_override.get_selected_id()
+
+		if current_learning_mode == "knowledge_tracing":
+			_start_loading("Agent is preparing the assessment...")
+			append_chat("System", "Adaptive testing is starting. Please wait for the first checkpoint.")
+			NetworkManager.send_message("Quiz me on the next concept.", view_as_student, override_val)
+		else:
+			_start_loading("Agent is preparing the lesson...")
+			append_chat("System", "Agent is preparing the lesson, please wait...")
+			NetworkManager.send_message("Please start the lesson.", view_as_student, override_val)
 		
 	# Show Teacher Toggle if Role is Teacher
 	var role_name = str(data.get("role", "")).to_lower()
@@ -616,7 +667,8 @@ func _on_show_graph(focus_id = null):
 	# Logic added in data callback
 	
 	var title = Label.new()
-	title.text = "Knowledge Graph: " + current_topic
+	var graph_title_topic = current_topic.replace(" [Knowledge Tracing]", "")
+	title.text = "Knowledge Graph: " + graph_title_topic
 	title.add_theme_font_size_override("font_size", 24)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -773,6 +825,8 @@ func _render_node(node: Dictionary, container: Control, depth: int) -> Control:
 		icon.text = "✅" 
 	elif node["status"] == "current":
 		icon.text = "👉"
+	elif node.get("is_tentative", false):
+		icon.text = "🟡"
 	elif node["status"] == "locked":
 		icon.text = "🔒"
 	else:
@@ -785,7 +839,10 @@ func _render_node(node: Dictionary, container: Control, depth: int) -> Control:
 	if node["type"] == "topic": type_marker = "[T] "
 	elif node["type"] == "subtopic": type_marker = "  "
 	
-	btn.text = type_marker + node["label"] + " (G" + str(node["grade_level"]) + ")"
+	var mastery_suffix = ""
+	if node.has("mastery_level") and int(node["mastery_level"]) > 0:
+		mastery_suffix = " [L" + str(node["mastery_level"]) + "/10]"
+	btn.text = type_marker + node["label"] + " (G" + str(node["grade_level"]) + ")" + mastery_suffix
 	btn.flat = true # Make it look like label but clickable
 	btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
 	

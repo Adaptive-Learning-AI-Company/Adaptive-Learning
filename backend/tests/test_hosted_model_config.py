@@ -32,6 +32,9 @@ def test_default_hosted_model_config_contains_openai_and_gemini_catalog(monkeypa
         assert payload["teacher_model"] == "gpt-5-mini"
         assert payload["verifier_model"] == "gpt-5-mini"
         assert payload["fast_model"] == "gpt-5-mini"
+        assert payload["teacher_priority_enabled"] is True
+        assert payload["verifier_priority_enabled"] is True
+        assert payload["fast_priority_enabled"] is True
         assert "openai" in providers
         assert "google" in providers
         assert "gpt-5-mini" in model_ids

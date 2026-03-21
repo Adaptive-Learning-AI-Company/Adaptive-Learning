@@ -172,8 +172,10 @@ class TopicProgress(Base):
     id = Column(Integer, primary_key=True, index=True)
     player_id = Column(Integer, ForeignKey("players.id"))
     topic_name = Column(String, index=True)
+    learning_mode = Column(String, index=True, default="teach_me")
     status = Column(String, default="NOT_STARTED") # NOT_STARTED, IN_PROGRESS, COMPLETED
     mastery_score = Column(Integer, default=0) # 0-100
+    mastery_level = Column(Integer, default=0) # 0-10 subject-level mastery
     mistakes = Column(JSON, default=list) # List of strings (concepts/problems)
     last_state_snapshot = Column(JSON, nullable=True) # Full graph state dump
     
@@ -293,9 +295,11 @@ class StudentNodeProgress(Base):
     player_id = Column(Integer, ForeignKey("players.id"), nullable=False)
     topic_name = Column(String, index=True, nullable=False)
     node_id = Column(String, index=True, nullable=False)
+    learning_mode = Column(String, index=True, default="teach_me")
     subject_key = Column(String, index=True, nullable=True)
     book_level = Column(Integer, nullable=True)
     status = Column(String, index=True, default="NOT_STARTED")
+    mastery_level = Column(Integer, default=0)
     attempt_count = Column(Integer, default=0)
     correct_count = Column(Integer, default=0)
     incorrect_count = Column(Integer, default=0)
@@ -509,7 +513,7 @@ def ensure_schema():
     table_names = set(inspector.get_table_names())
 
     table_columns = {}
-    for table_name in ["players", "topic_progress", "interactions"]:
+    for table_name in ["players", "topic_progress", "interactions", "student_node_progress"]:
         if table_name in table_names:
             table_columns[table_name] = {column["name"] for column in inspector.get_columns(table_name)}
 
@@ -545,9 +549,11 @@ def ensure_schema():
             "openai_api_key_updated_at": "ALTER TABLE players ADD COLUMN openai_api_key_updated_at TIMESTAMP",
         },
         "topic_progress": {
+            "learning_mode": "ALTER TABLE topic_progress ADD COLUMN learning_mode VARCHAR DEFAULT 'teach_me'",
             "subject_key": "ALTER TABLE topic_progress ADD COLUMN subject_key VARCHAR",
             "book_level": "ALTER TABLE topic_progress ADD COLUMN book_level INTEGER",
             "content_grade_level": "ALTER TABLE topic_progress ADD COLUMN content_grade_level INTEGER",
+            "mastery_level": "ALTER TABLE topic_progress ADD COLUMN mastery_level INTEGER DEFAULT 0",
             "created_at": "ALTER TABLE topic_progress ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
             "updated_at": "ALTER TABLE topic_progress ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
             "last_interaction_at": "ALTER TABLE topic_progress ADD COLUMN last_interaction_at TIMESTAMP",
@@ -577,6 +583,10 @@ def ensure_schema():
             "score_percent": "ALTER TABLE interactions ADD COLUMN score_percent INTEGER",
             "is_correct": "ALTER TABLE interactions ADD COLUMN is_correct BOOLEAN",
         },
+        "student_node_progress": {
+            "learning_mode": "ALTER TABLE student_node_progress ADD COLUMN learning_mode VARCHAR DEFAULT 'teach_me'",
+            "mastery_level": "ALTER TABLE student_node_progress ADD COLUMN mastery_level INTEGER DEFAULT 0",
+        },
     }
 
     statements = []
@@ -602,6 +612,7 @@ def ensure_indexes():
         "CREATE INDEX IF NOT EXISTS ix_players_curriculum_region ON players (curriculum_region)",
         "CREATE INDEX IF NOT EXISTS ix_players_stripe_customer_id ON players (stripe_customer_id)",
         "CREATE INDEX IF NOT EXISTS ix_players_subscription_status_cached ON players (subscription_status_cached)",
+        "CREATE INDEX IF NOT EXISTS ix_topic_progress_learning_mode ON topic_progress (learning_mode)",
         "CREATE INDEX IF NOT EXISTS ix_topic_progress_subject_key ON topic_progress (subject_key)",
         "CREATE INDEX IF NOT EXISTS ix_topic_progress_last_interaction_at ON topic_progress (last_interaction_at)",
         "CREATE INDEX IF NOT EXISTS ix_topic_progress_completed_at ON topic_progress (completed_at)",
@@ -626,6 +637,7 @@ def ensure_indexes():
         "CREATE INDEX IF NOT EXISTS ix_student_node_progress_player_id ON student_node_progress (player_id)",
         "CREATE INDEX IF NOT EXISTS ix_student_node_progress_topic_name ON student_node_progress (topic_name)",
         "CREATE INDEX IF NOT EXISTS ix_student_node_progress_node_id ON student_node_progress (node_id)",
+        "CREATE INDEX IF NOT EXISTS ix_student_node_progress_learning_mode ON student_node_progress (learning_mode)",
         "CREATE INDEX IF NOT EXISTS ix_student_node_progress_status ON student_node_progress (status)",
         "CREATE INDEX IF NOT EXISTS ix_student_node_progress_last_seen_at ON student_node_progress (last_seen_at)",
         "CREATE INDEX IF NOT EXISTS ix_promo_codes_code_prefix ON promo_codes (code_prefix)",
@@ -678,6 +690,9 @@ def backfill_schema_defaults():
             derived_subject = _normalize_subject_key(progress.topic_name)
             derived_level = _extract_book_level(progress.topic_name)
 
+            if not progress.learning_mode:
+                progress.learning_mode = "teach_me"
+                changed = True
             if not progress.subject_key and derived_subject:
                 progress.subject_key = derived_subject
                 changed = True
@@ -704,6 +719,9 @@ def backfill_schema_defaults():
             if progress.answer_attempt_count is None:
                 progress.answer_attempt_count = 0
                 changed = True
+            if progress.mastery_level is None:
+                progress.mastery_level = max(0, min(10, int(round(float(progress.mastery_score or 0) / 10.0))))
+                changed = True
             if progress.correct_answer_count is None:
                 progress.correct_answer_count = 0
                 changed = True
@@ -721,6 +739,14 @@ def backfill_schema_defaults():
                 changed = True
             if progress.current_node and not progress.current_node_started_at:
                 progress.current_node_started_at = progress.last_interaction_at or progress.updated_at or now
+                changed = True
+
+        for node_progress in db.query(StudentNodeProgress).all():
+            if not node_progress.learning_mode:
+                node_progress.learning_mode = "teach_me"
+                changed = True
+            if node_progress.mastery_level is None:
+                node_progress.mastery_level = 10 if node_progress.status == "COMPLETED" else 0
                 changed = True
 
         for interaction in db.query(Interaction).all():
