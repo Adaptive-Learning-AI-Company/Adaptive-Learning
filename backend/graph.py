@@ -741,36 +741,35 @@ def adapter_node(state: AgentState):
             progress = get_topic_progress(db, player.id, topic, learning_mode)
 
             unit_score = 0.0
-            next_node = None
-            if progress:
-                latest_node_id = progress.current_node
-                if not latest_node_id:
-                    next_node = select_next_tracing_node(
-                        db,
-                        player_id=player.id,
-                        topic_name=topic,
-                        target_grade=target_grade,
-                    )
-                    if next_node:
-                        touch_current_node(
-                            db,
-                            player,
-                            topic,
-                            next_node.id,
-                            learning_mode=learning_mode,
-                        )
-                        progress = get_topic_progress(db, player.id, topic, learning_mode)
-                        latest_node_id = next_node.id
-                current_row = None
-                if latest_node_id:
-                    current_row = db.query(StudentNodeProgress).filter(
-                        StudentNodeProgress.player_id == player.id,
-                        StudentNodeProgress.topic_name == topic,
-                        StudentNodeProgress.node_id == latest_node_id,
-                        StudentNodeProgress.learning_mode == KNOWLEDGE_TRACING_MODE,
-                    ).first()
-                if current_row:
-                    unit_score = float(int(current_row.mastery_level or 0) * 10)
+            active_node_id = progress.current_node if progress else None
+            next_node = select_next_tracing_node(
+                db,
+                player_id=player.id,
+                topic_name=topic,
+                target_grade=target_grade,
+                current_node_id=active_node_id,
+            )
+            if next_node:
+                touch_current_node(
+                    db,
+                    player,
+                    topic,
+                    next_node.id,
+                    learning_mode=learning_mode,
+                )
+                progress = get_topic_progress(db, player.id, topic, learning_mode)
+                active_node_id = next_node.id
+
+            current_row = None
+            if active_node_id:
+                current_row = db.query(StudentNodeProgress).filter(
+                    StudentNodeProgress.player_id == player.id,
+                    StudentNodeProgress.topic_name == topic,
+                    StudentNodeProgress.node_id == active_node_id,
+                    StudentNodeProgress.learning_mode == KNOWLEDGE_TRACING_MODE,
+                ).first()
+            if current_row:
+                unit_score = float(int(current_row.mastery_level or 0) * 10)
 
             done_grade, total_grade = get_all_subjects_stats(player.id, db)
             grade_percent = round((done_grade / total_grade) * 100, 1) if total_grade > 0 else 0.0
@@ -780,22 +779,39 @@ def adapter_node(state: AgentState):
                 "grade": grade_percent,
             }
 
-            follow_up = None
+            latest_feedback = messages[-1].content if messages else ""
             if int(refreshed.get("subject_level", 0)) >= 10:
-                follow_up = AIMessage(content="Full mastery reached for this subject. I can still spot-check you later if needed.")
-            elif next_node:
-                follow_up = AIMessage(content=f"Next checkpoint is ready: {next_node.label}.")
-
-            db.commit()
-            if follow_up is not None:
-                latest_feedback = messages[-1].content if messages else ""
-                combined_content = follow_up.content if latest_feedback == "" else latest_feedback + "\n\n" + follow_up.content
+                follow_up_text = "Full mastery reached for this subject. I can still spot-check you later if needed."
+                db.commit()
+                combined_content = follow_up_text if latest_feedback == "" else latest_feedback + "\n\n" + follow_up_text
                 return {
                     "messages": [AIMessage(content=combined_content)],
                     "current_action": "IDLE",
                     "next_dest": "END",
                     "mastery": mastery_data,
                 }
+
+            if next_node is not None:
+                db.commit()
+                next_question_state = dict(state)
+                next_question_state["messages"] = list(messages) + [
+                    HumanMessage(content="Ask the next assessment question for the current concept.")
+                ]
+                next_question_result = teacher_node(next_question_state)
+                next_question_messages = next_question_result.get("messages", [])
+                next_question_text = next_question_messages[-1].content if next_question_messages else ""
+                combined_content = next_question_text if latest_feedback == "" else latest_feedback + "\n\n" + next_question_text
+                result_payload = {
+                    "messages": [AIMessage(content=combined_content)],
+                    "current_action": next_question_result.get("current_action", "PROBLEM_GIVEN"),
+                    "next_dest": "END",
+                    "mastery": mastery_data,
+                }
+                if next_question_result.get("last_problem"):
+                    result_payload["last_problem"] = next_question_result["last_problem"]
+                return result_payload
+
+            db.commit()
             return {"messages": [], "current_action": "IDLE", "next_dest": "END", "mastery": mastery_data}
         finally:
             db.close()

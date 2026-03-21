@@ -43,6 +43,7 @@ def test_teacher_knowledge_tracing_answer_roundtrip(monkeypatch):
         [
             'What part of speech is the word "but" in the sentence?',
             '{"result": "CORRECT", "score_percent": 100, "feedback": "Correct."}',
+            'Which sentence uses "but" to connect two ideas?',
         ]
     )
 
@@ -99,11 +100,16 @@ def test_teacher_knowledge_tracing_answer_roundtrip(monkeypatch):
     assert teacher_result["current_action"] == "PROBLEM_GIVEN"
     assert verifier_result["next_dest"] == "ADAPTER"
     assert adapter_result["next_dest"] == "END"
+    assert adapter_result["current_action"] == "PROBLEM_GIVEN"
     assert adapter_result["mastery"]["unit"] >= 0.0
+    assert adapter_result["last_problem"] == 'Which sentence uses "but" to connect two ideas?'
+    assert len(adapter_result["messages"]) == 1
+    assert adapter_result["messages"][0].content == "[CORRECT] Correct.\n\nWhich sentence uses \"but\" to connect two ideas?"
 
-    assert len(captured_calls) == 2
+    assert len(captured_calls) == 3
     assert "model_kwargs" not in captured_calls[0]["kwargs"]
     assert "model_kwargs" not in captured_calls[1]["kwargs"]
+    assert "model_kwargs" not in captured_calls[2]["kwargs"]
 
 
 def test_parse_verifier_response_strips_rogue_follow_up_question():
