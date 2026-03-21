@@ -27,6 +27,7 @@ var opt_grade_override: OptionButton
 var lbl_grade_override: Label
 var current_grade_level: int = 5 # Default, should sync from session
 var current_learning_mode := "teach_me"
+var current_role_name := ""
 var action_buttons := []
 
 
@@ -360,6 +361,32 @@ func _refresh_learning_mode_ui():
 		if opt_grade_override:
 			opt_grade_override.disabled = false
 
+	_refresh_teacher_mode_toggle()
+
+func _refresh_teacher_mode_toggle():
+	if btn_mode_toggle == null:
+		return
+
+	var teacher_capable = current_role_name == "teacher" or current_role_name == "admin"
+	btn_mode_toggle.visible = teacher_capable
+	if not teacher_capable:
+		view_as_student = false
+		btn_mode_toggle.disabled = true
+		btn_mode_toggle.tooltip_text = ""
+		btn_mode_toggle.set_pressed_no_signal(false)
+		return
+
+	if current_learning_mode == "knowledge_tracing":
+		view_as_student = true
+		btn_mode_toggle.disabled = true
+		btn_mode_toggle.tooltip_text = "Knowledge tracing is always student-facing."
+		btn_mode_toggle.set_pressed_no_signal(true)
+		return
+
+	btn_mode_toggle.disabled = false
+	btn_mode_toggle.tooltip_text = ""
+	btn_mode_toggle.set_pressed_no_signal(view_as_student)
+
 func _input(event):
 	# Shortcut to focus chat
 	if event.is_action_pressed("ui_accept") and not input_field.has_focus():
@@ -455,6 +482,7 @@ func _on_session_ready(data):
 	if summary == null:
 		summary = ""
 
+	current_role_name = str(data.get("role", "")).to_lower()
 	current_learning_mode = str(data.get("learning_mode", current_learning_mode))
 	if data.has("resolved_topic"):
 		current_topic = str(data["resolved_topic"])
@@ -482,6 +510,13 @@ func _on_session_ready(data):
 	if lbl_current_topic and topic_label != "" and (not state or not state.has("current_node_label")):
 		lbl_current_topic.text = "Current: " + topic_label
 
+	# Show Teacher Toggle if Role is Teacher
+	if current_role_name == "teacher" or current_role_name == "admin":
+		if current_learning_mode == "knowledge_tracing":
+			append_chat("System", "Teacher knowledge tracing uses student view automatically.")
+		else:
+			append_chat("System", "Teacher Mode Active. Use toggle to switch views.")
+
 	# Proactive Trigger if mastery is 0 (New Topic)
 	if data.get("mastery", 0) == 0:
 		var override_val = -1
@@ -496,12 +531,6 @@ func _on_session_ready(data):
 			_start_loading("Agent is preparing the lesson...")
 			append_chat("System", "Agent is preparing the lesson, please wait...")
 			NetworkManager.send_message("Please start the lesson.", view_as_student, override_val)
-		
-	# Show Teacher Toggle if Role is Teacher
-	var role_name = str(data.get("role", "")).to_lower()
-	if role_name == "teacher" or role_name == "admin":
-		btn_mode_toggle.visible = true
-		append_chat("System", "Teacher Mode Active. Use toggle to switch views.")
 
 
 func _on_network_error(msg: String):

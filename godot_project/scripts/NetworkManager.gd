@@ -198,6 +198,8 @@ func _on_chat_completed(result, response_code, headers, body):
 		var parsed = JSON.parse_string(response_body)
 		if typeof(parsed) == TYPE_DICTIONARY and parsed.has("detail"):
 			error_message = str(parsed["detail"])
+		elif response_body.strip_edges() != "":
+			error_message = response_body.strip_edges()
 		emit_signal("error_occurred", error_message)
 
 func post_request(endpoint: String, data: Dictionary, success_callback: Callable, error_callback: Callable):

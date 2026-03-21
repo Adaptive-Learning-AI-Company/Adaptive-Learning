@@ -628,7 +628,6 @@ def verifier_node(state: AgentState):
         _hosted_verifier_model(),
         allow_preferred_model=True,
         priority_enabled=_hosted_verifier_priority_enabled(),
-        model_kwargs={"response_format": {"type": "json_object"}},
     )
     start_time = time.perf_counter()
     response = verifier_llm.invoke([SystemMessage(content=prompt)])
@@ -787,7 +786,6 @@ def adapter_node(state: AgentState):
         _hosted_fast_model(),
         allow_preferred_model=True,
         priority_enabled=_hosted_fast_priority_enabled(),
-        model_kwargs={"response_format": {"type": "json_object"}},
     )
     response = adapter_llm.invoke([SystemMessage(content=prompt)])
     content = response.content
