@@ -57,12 +57,13 @@ For the full rollout checklist for this upgrade, see [UPGRADE_INSTALLATION_GUIDE
    Admins can switch the hosted tutor `teacher`, `verifier`, and `fast` models from the in-app Admin Access screen. Gemini choices only become selectable if `GOOGLE_API_KEY` is configured on the server.
    Tutoring access is locked down by default. Only users with an active subscription or access code can reach the agents unless you explicitly set `ALLOW_OPEN_TUTORING_ACCESS=true` for a temporary open-access environment.
    On Render, copy values from `.env.public` plus your private `.env` or `.env.secret`, or mount the secret values at `/etc/secrets/.env`, and also provide `DATABASE_URL` from your managed Postgres instance.
+   `DATABASE_URL` is now required by default outside tests. If you intentionally want the old local SQLite fallback, set `ALLOW_LOCAL_SQLITE=true`.
    Godot exports now derive their production backend URL from `PUBLIC_BASE_URL`; no manual `Secrets.gd` file is required.
 4. Run the server:
    ```bash
    uv run uvicorn backend.main:app --reload
    ```
-   Server will run at `http://127.0.0.1:8000`.
+   Server will run at `http://127.0.0.1:8000` if you start a local backend explicitly.
 
 ### Render Deploy
 
@@ -92,6 +93,7 @@ Dependency ownership is split intentionally:
 1. Open Godot Engine.
 2. Import the project located in `godot_project/`.
 3. Open `scenes/Library.tscn` and press Play (F5).
+   The Godot client now targets the Render backend by default, including in editor/debug runs. Set `ADAPTIVE_BACKEND_MODE=local` only when you intentionally want `http://127.0.0.1:8000`.
 4. Enter a topic in the UI (e.g., "History of Rome") and click "Start Learning".
 5. Chat with the agents!
 

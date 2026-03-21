@@ -2,6 +2,7 @@ from sqlalchemy import create_engine, Column, Integer, String, Text, ForeignKey,
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship, Session
 import datetime
 import re
+import sys
 
 import os
 
@@ -9,8 +10,40 @@ from .config import DEFAULT_AVATAR_ID, load_local_env
 
 load_local_env()
 
-# Default to SQLite for local development
-URL_DATABASE = os.getenv("DATABASE_URL", "sqlite:///./learning_data.db")
+DEFAULT_SQLITE_URL = "sqlite:///./learning_data.db"
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def resolve_database_url(env: dict[str, str] | None = None, running_tests: bool | None = None) -> str:
+    source = env if env is not None else os.environ
+    configured_url = source.get("DATABASE_URL", "").strip()
+    if configured_url:
+        return configured_url
+
+    if running_tests is None:
+        running_tests = "pytest" in sys.modules
+
+    raw_allow_local = source.get("ALLOW_LOCAL_SQLITE")
+    if raw_allow_local is None:
+        allow_local_sqlite = running_tests
+    else:
+        allow_local_sqlite = raw_allow_local.strip().lower() in {"1", "true", "yes", "on"}
+    if allow_local_sqlite:
+        return DEFAULT_SQLITE_URL
+
+    raise RuntimeError(
+        "DATABASE_URL is required by default. "
+        "Set ALLOW_LOCAL_SQLITE=true to opt into the local SQLite fallback."
+    )
+
+
+URL_DATABASE = resolve_database_url()
 
 # Render uses 'postgres://' which is deprecated in SQLAlchemy 1.4+ (needs 'postgresql://')
 if URL_DATABASE and URL_DATABASE.startswith("postgres://"):
@@ -511,6 +544,7 @@ def init_db():
 def ensure_schema():
     inspector = inspect(engine)
     table_names = set(inspector.get_table_names())
+    sqlite_legacy_mode = engine.dialect.name == "sqlite"
 
     table_columns = {}
     for table_name in ["players", "topic_progress", "interactions", "student_node_progress"]:
@@ -540,8 +574,16 @@ def ensure_schema():
             "payment_method_last4": "ALTER TABLE players ADD COLUMN payment_method_last4 VARCHAR",
             "payment_method_exp_month": "ALTER TABLE players ADD COLUMN payment_method_exp_month INTEGER",
             "payment_method_exp_year": "ALTER TABLE players ADD COLUMN payment_method_exp_year INTEGER",
-            "created_at": "ALTER TABLE players ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
-            "updated_at": "ALTER TABLE players ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+            "created_at": (
+                "ALTER TABLE players ADD COLUMN created_at TIMESTAMP"
+                if sqlite_legacy_mode
+                else "ALTER TABLE players ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+            ),
+            "updated_at": (
+                "ALTER TABLE players ADD COLUMN updated_at TIMESTAMP"
+                if sqlite_legacy_mode
+                else "ALTER TABLE players ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+            ),
             "last_login_at": "ALTER TABLE players ADD COLUMN last_login_at TIMESTAMP",
             "email_verified_at": "ALTER TABLE players ADD COLUMN email_verified_at TIMESTAMP",
             "password_changed_at": "ALTER TABLE players ADD COLUMN password_changed_at TIMESTAMP",
@@ -554,8 +596,16 @@ def ensure_schema():
             "book_level": "ALTER TABLE topic_progress ADD COLUMN book_level INTEGER",
             "content_grade_level": "ALTER TABLE topic_progress ADD COLUMN content_grade_level INTEGER",
             "mastery_level": "ALTER TABLE topic_progress ADD COLUMN mastery_level INTEGER DEFAULT 0",
-            "created_at": "ALTER TABLE topic_progress ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
-            "updated_at": "ALTER TABLE topic_progress ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+            "created_at": (
+                "ALTER TABLE topic_progress ADD COLUMN created_at TIMESTAMP"
+                if sqlite_legacy_mode
+                else "ALTER TABLE topic_progress ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+            ),
+            "updated_at": (
+                "ALTER TABLE topic_progress ADD COLUMN updated_at TIMESTAMP"
+                if sqlite_legacy_mode
+                else "ALTER TABLE topic_progress ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+            ),
             "last_interaction_at": "ALTER TABLE topic_progress ADD COLUMN last_interaction_at TIMESTAMP",
             "completed_at": "ALTER TABLE topic_progress ADD COLUMN completed_at TIMESTAMP",
             "answer_attempt_count": "ALTER TABLE topic_progress ADD COLUMN answer_attempt_count INTEGER DEFAULT 0",

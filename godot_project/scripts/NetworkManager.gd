@@ -6,7 +6,7 @@ signal error_occurred(msg: String)
 signal progress_updated(xp: int, level: int, mastery: int)
 
 # PROD URL (Render)
-var prod_url = "https://placeholder-backend.onrender.com" # Updated via generated config or Secrets.gd fallback
+var prod_url = "https://adaptive-learning-ckcv.onrender.com" # Secrets.gd can still override this.
 # LOCAL URL
 var local_url = "http://127.0.0.1:8000"
 
@@ -32,6 +32,19 @@ func _load_prod_url_from_secrets():
 			if resolved != "":
 				prod_url = resolved
 				return
+
+func _should_use_local_backend() -> bool:
+	if OS.has_environment("ADAPTIVE_BACKEND_MODE"):
+		var backend_mode = OS.get_environment("ADAPTIVE_BACKEND_MODE").strip_edges().to_lower()
+		return backend_mode == "local"
+	return false
+
+func _resolve_backend_base_url() -> String:
+	if _should_use_local_backend():
+		print("NetworkManager: Using LOCAL Backend override: " + local_url)
+		return local_url
+	print("NetworkManager: Using Render Backend: " + prod_url)
+	return prod_url
 
 func get_topic_graph(topic: String, success_callback: Callable, error_callback: Callable, focus_node_id = null):
 	var http = HTTPRequest.new()
@@ -85,17 +98,7 @@ func set_current_node(topic: String, node_id: String, success_callback: Callable
 func _ready():
 	print("NetworkManager ready")
 	_load_prod_url_from_secrets()
-	# Detect Environment
-	if OS.has_feature("editor") or OS.has_feature("debug"):
-		base_url = local_url
-		print("NetworkManager: Using LOCAL Backend: " + base_url)
-
-		# Secrets loaded (prod_url updated), but keep base_url = local_url for now.
-		# base_url = prod_url # ERROR: Do not overwrite local_url here!
-	else:
-		# Prod / Exported Build
-		base_url = prod_url
-		print("NetworkManager: Using PROD Backend: " + base_url)
+	base_url = _resolve_backend_base_url()
 
 # Helper to construct headers with Auth
 func _get_headers() -> PackedStringArray:
