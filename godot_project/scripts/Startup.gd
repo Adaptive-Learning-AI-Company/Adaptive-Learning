@@ -192,14 +192,20 @@ func _on_get_help_pressed():
 		help_popup.position = Vector2(100, 100)
 		add_child(help_popup)
 
+		var scroll = ScrollContainer.new()
+		scroll.name = "HelpScroll"
+		scroll.set_anchors_preset(Control.PRESET_FULL_RECT)
+		scroll.offset_left = 10
+		scroll.offset_top = 10
+		scroll.offset_right = -10
+		scroll.offset_bottom = -10
+		help_popup.add_child(scroll)
+
 		var vbox = VBoxContainer.new()
 		vbox.name = "VBoxContainer"
-		vbox.set_anchors_preset(Control.PRESET_FULL_RECT)
-		vbox.offset_left = 10
-		vbox.offset_top = 10
-		vbox.offset_right = -10
-		vbox.offset_bottom = -10
-		help_popup.add_child(vbox)
+		vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		vbox.custom_minimum_size = Vector2(360, 0)
+		scroll.add_child(vbox)
 
 		var intro = Label.new()
 		intro.text = "Send your question or comment to Adaptive Tutor support."
@@ -256,11 +262,11 @@ func _on_get_help_pressed():
 		status.modulate = Color(1, 1, 0)
 		vbox.add_child(status)
 
-	var help_user_input = help_popup.get_node("VBoxContainer/HelpUserIdInput")
+	var help_user_input = help_popup.get_node("HelpScroll/VBoxContainer/HelpUserIdInput")
 	if help_user_input and help_user_input.text.strip_edges() == "" and username_input:
 		help_user_input.text = username_input.text.strip_edges()
 
-	var help_status = help_popup.get_node("VBoxContainer/Status")
+	var help_status = help_popup.get_node("HelpScroll/VBoxContainer/Status")
 	help_status.modulate = Color(1, 1, 0)
 	help_status.text = ""
 	help_popup.popup_centered()
@@ -270,12 +276,12 @@ func _submit_help_request():
 	if help_popup == null:
 		return
 
-	var name_input = help_popup.get_node("VBoxContainer/HelpNameInput")
-	var email_input = help_popup.get_node("VBoxContainer/HelpEmailInput")
-	var user_input = help_popup.get_node("VBoxContainer/HelpUserIdInput")
-	var message_input = help_popup.get_node("VBoxContainer/HelpMessageInput")
-	var submit_button = help_popup.get_node("VBoxContainer/HelpSubmitButton")
-	var status = help_popup.get_node("VBoxContainer/Status")
+	var name_input = help_popup.get_node("HelpScroll/VBoxContainer/HelpNameInput")
+	var email_input = help_popup.get_node("HelpScroll/VBoxContainer/HelpEmailInput")
+	var user_input = help_popup.get_node("HelpScroll/VBoxContainer/HelpUserIdInput")
+	var message_input = help_popup.get_node("HelpScroll/VBoxContainer/HelpMessageInput")
+	var submit_button = help_popup.get_node("HelpScroll/VBoxContainer/HelpSubmitButton")
+	var status = help_popup.get_node("HelpScroll/VBoxContainer/Status")
 
 	var name_value = name_input.text.strip_edges()
 	var email_value = email_input.text.strip_edges()
