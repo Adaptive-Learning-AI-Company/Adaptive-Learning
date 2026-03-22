@@ -249,6 +249,11 @@ def _strip_feedback_follow_up_question(feedback: str) -> str:
         "follow-up:",
         "another check:",
         "next checkpoint:",
+        "want another quiz question",
+        "want another question",
+        "would you like another question",
+        "would you like another quiz question",
+        "ready for another question",
     ):
         marker_index = lowered.find(marker)
         if marker_index > 0:
@@ -261,6 +266,34 @@ def _strip_feedback_follow_up_question(feedback: str) -> str:
             return preserved
 
     return cleaned
+
+
+def _normalized_message_text(value: str | None) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip()).lower()
+
+
+def _knowledge_tracing_route_override(state: AgentState, last_user_msg: str) -> str | None:
+    if not is_knowledge_tracing_mode(_learning_mode(state)):
+        return None
+
+    normalized = _normalized_message_text(last_user_msg)
+    if normalized.startswith("[system] update grade level context"):
+        return "TEACHER"
+    if normalized.startswith("[system] update role context"):
+        return "TEACHER"
+
+    for prefix in (
+        "quiz me on the next concept",
+        "give me another question on this concept",
+        "challenge me with a slightly harder question on this concept",
+        "ask the next assessment question for the current concept",
+    ):
+        if normalized.startswith(prefix):
+            return "TEACHER"
+
+    if state.get("current_action") == "PROBLEM_GIVEN":
+        return "VERIFIER"
+    return None
 
 
 def _parse_target_grade(state: AgentState) -> int | None:
@@ -328,6 +361,10 @@ def _select_active_node(db, player: Player, state: AgentState):
 def supervisor_node(state: AgentState):
     messages = state['messages']
     last_user_msg = messages[-1].content
+
+    tracing_override = _knowledge_tracing_route_override(state, last_user_msg)
+    if tracing_override is not None:
+        return {"next_dest": tracing_override}
     
     # Simple logic mapping for robust routing
     prompt = SUPERVISOR_PROMPT.format(

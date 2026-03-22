@@ -7,7 +7,7 @@ from sqlalchemy.orm import sessionmaker
 import backend.database as database_module
 import backend.graph as graph_module
 from backend.database import Base, Player
-from backend.graph import _parse_verifier_response, adapter_node, teacher_node, verifier_node
+from backend.graph import _parse_verifier_response, adapter_node, supervisor_node, teacher_node, verifier_node
 from backend.knowledge_tracing import KNOWLEDGE_TRACING_MODE, knowledge_tracing_topic_name
 
 
@@ -120,3 +120,69 @@ def test_parse_verifier_response_strips_rogue_follow_up_question():
     assert is_correct is True
     assert score_percent == 100
     assert feedback == "[CORRECT] Correct"
+
+
+def test_parse_verifier_response_strips_quiz_invitation_follow_up():
+    is_correct, score_percent, feedback = _parse_verifier_response(
+        '{"result": "INCORRECT", "score_percent": 0, "feedback": "That is okay. The point is called an ordered pair. Want another quiz question?"}'
+    )
+
+    assert is_correct is False
+    assert score_percent == 0
+    assert feedback == "[INCORRECT] That is okay. The point is called an ordered pair"
+
+
+def test_supervisor_routes_active_tracing_answers_to_verifier(monkeypatch):
+    def fake_build_llm(state, model, allow_preferred_model=False, priority_enabled=False, **kwargs):
+        return _FakeLLM("GENERAL_CHAT"), "fake-model", "platform", None
+
+    monkeypatch.setattr(graph_module, "_build_llm", fake_build_llm)
+
+    state = {
+        "session_id": "trace-session",
+        "topic": knowledge_tracing_topic_name("Math"),
+        "grade_level": "Grade 5",
+        "location": "New Hampshire",
+        "learning_style": "Visual",
+        "username": "teacher-tracer",
+        "mastery": 0,
+        "current_action": "PROBLEM_GIVEN",
+        "last_problem": "What is a unit fraction?",
+        "next_dest": "END",
+        "role": "Teacher",
+        "view_as_student": True,
+        "learning_mode": KNOWLEDGE_TRACING_MODE,
+        "messages": [HumanMessage(content="don't know")],
+    }
+
+    result = supervisor_node(state)
+
+    assert result["next_dest"] == "VERIFIER"
+
+
+def test_supervisor_routes_tracing_control_message_to_teacher(monkeypatch):
+    def fake_build_llm(state, model, allow_preferred_model=False, priority_enabled=False, **kwargs):
+        return _FakeLLM("VERIFIER"), "fake-model", "platform", None
+
+    monkeypatch.setattr(graph_module, "_build_llm", fake_build_llm)
+
+    state = {
+        "session_id": "trace-session",
+        "topic": knowledge_tracing_topic_name("Math"),
+        "grade_level": "Grade 5",
+        "location": "New Hampshire",
+        "learning_style": "Visual",
+        "username": "teacher-tracer",
+        "mastery": 0,
+        "current_action": "PROBLEM_GIVEN",
+        "last_problem": "What is a unit fraction?",
+        "next_dest": "END",
+        "role": "Teacher",
+        "view_as_student": True,
+        "learning_mode": KNOWLEDGE_TRACING_MODE,
+        "messages": [HumanMessage(content="Give me another question on this concept.")],
+    }
+
+    result = supervisor_node(state)
+
+    assert result["next_dest"] == "TEACHER"
