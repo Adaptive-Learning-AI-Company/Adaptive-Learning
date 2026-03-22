@@ -1419,7 +1419,7 @@ async def select_book(request: BookSelectRequest, current_user: Player = Depends
         "username": player.username,
         "mastery": progress.mastery_score,
         "messages": [], 
-        "currrent_action": "IDLE",
+        "current_action": "IDLE",
         "last_problem": "",
         "next_dest": "GENERAL_CHAT",
         "role": _effective_learning_role(player), # Treat admins as teacher-capable in tutoring flows

@@ -527,17 +527,24 @@ func _on_session_ready(data):
 		else:
 			append_chat("System", "Teacher Mode Active. Use toggle to switch views.")
 
+	var should_start_tracing = false
+	if current_learning_mode == "knowledge_tracing":
+		var tracing_mastery_level = int(data.get("mastery_level", 0))
+		var current_action = str(state.get("current_action", "IDLE"))
+		should_start_tracing = tracing_mastery_level < 10 and current_action != "PROBLEM_GIVEN"
+
+	if should_start_tracing:
+		var override_val = -1
+		_start_loading("Agent is preparing the assessment...")
+		append_chat("System", "Adaptive testing is starting. Please wait for the first checkpoint.")
+		NetworkManager.send_message("Quiz me on the next concept.", view_as_student, override_val)
 	# Proactive Trigger if mastery is 0 (New Topic)
-	if data.get("mastery", 0) == 0:
+	elif data.get("mastery", 0) == 0:
 		var override_val = -1
 		if current_learning_mode != "knowledge_tracing" and opt_grade_override and opt_grade_override.selected > 0:
 			override_val = opt_grade_override.get_selected_id()
 
-		if current_learning_mode == "knowledge_tracing":
-			_start_loading("Agent is preparing the assessment...")
-			append_chat("System", "Adaptive testing is starting. Please wait for the first checkpoint.")
-			NetworkManager.send_message("Quiz me on the next concept.", view_as_student, override_val)
-		else:
+		if current_learning_mode != "knowledge_tracing":
 			_start_loading("Agent is preparing the lesson...")
 			append_chat("System", "Agent is preparing the lesson, please wait...")
 			NetworkManager.send_message("Please start the lesson.", view_as_student, override_val)
