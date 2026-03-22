@@ -1,13 +1,21 @@
 from datetime import datetime
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import backend.database as database_module
 import backend.graph as graph_module
 from backend.database import Base, Player
-from backend.graph import _parse_verifier_response, adapter_node, supervisor_node, teacher_node, verifier_node
+from backend.graph import (
+    _build_knowledge_tracing_prompt,
+    _knowledge_tracing_request_directive,
+    _parse_verifier_response,
+    adapter_node,
+    supervisor_node,
+    teacher_node,
+    verifier_node,
+)
 from backend.knowledge_tracing import KNOWLEDGE_TRACING_MODE, knowledge_tracing_topic_name
 
 
@@ -31,6 +39,14 @@ class _FakeLLM:
 
     def invoke(self, _messages):
         return _FakeResponse(self._content)
+
+
+class _FakeNode:
+    def __init__(self, node_id: str, label: str, description: str, grade_level: int = 5):
+        self.id = node_id
+        self.label = label
+        self.description = description
+        self.grade_level = grade_level
 
 
 def test_teacher_knowledge_tracing_answer_roundtrip(monkeypatch):
@@ -186,3 +202,42 @@ def test_supervisor_routes_tracing_control_message_to_teacher(monkeypatch):
     result = supervisor_node(state)
 
     assert result["next_dest"] == "TEACHER"
+
+
+def test_build_knowledge_tracing_prompt_targets_current_standard_and_recent_variation():
+    state = {
+        "topic": knowledge_tracing_topic_name("Math"),
+        "grade_level": "Grade 5",
+        "messages": [
+            AIMessage(content="If a point is (5, 3), what is the y-coordinate?"),
+            HumanMessage(content="3"),
+            AIMessage(content="[CORRECT] Great job!\n\nIf a point is (7, 2), what is the x-coordinate?"),
+        ],
+        "learning_mode": KNOWLEDGE_TRACING_MODE,
+    }
+    node = _FakeNode(
+        "Geometry->Coordinate_Plane->5.G.3",
+        "5.G.3",
+        "Understand that attributes belonging to a category of two-dimensional figures also belong to all subcategories of that category.",
+    )
+
+    prompt = _build_knowledge_tracing_prompt(state, node, "New Hampshire", "Student Learning Style: Visual. Adapt your explanation accordingly.")
+
+    assert "5.G.3" in prompt
+    assert "two-dimensional figures" in prompt
+    assert "Do not ask a coordinate-reading or x/y lookup question unless" in prompt
+    assert "If a point is (5, 3), what is the y-coordinate?" in prompt
+    assert "If a point is (7, 2), what is the x-coordinate?" in prompt
+
+
+def test_knowledge_tracing_request_directive_requests_different_question_type():
+    node = _FakeNode(
+        "Geometry->Coordinate_Plane->5.G.3",
+        "5.G.3",
+        "Understand that attributes belonging to a category of two-dimensional figures also belong to all subcategories of that category.",
+    )
+
+    directive = _knowledge_tracing_request_directive("Give me another question on this concept.", node)
+
+    assert "5.G.3" in directive
+    assert "different question type" in directive

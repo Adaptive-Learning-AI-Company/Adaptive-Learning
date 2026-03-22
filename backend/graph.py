@@ -296,6 +296,86 @@ def _knowledge_tracing_route_override(state: AgentState, last_user_msg: str) -> 
     return None
 
 
+def _extract_question_sentences(text: str | None) -> list[str]:
+    cleaned = " ".join(str(text or "").split()).strip()
+    if cleaned == "":
+        return []
+
+    questions: list[str] = []
+    for match in re.findall(r"[^?]*\?", cleaned):
+        candidate = match.strip()
+        if candidate and candidate not in questions:
+            questions.append(candidate)
+    return questions
+
+
+def _recent_tracing_questions(state: AgentState, limit: int = 3) -> list[str]:
+    collected: list[str] = []
+    for message in reversed(state.get("messages", [])):
+        for question in reversed(_extract_question_sentences(getattr(message, "content", ""))):
+            if question not in collected:
+                collected.append(question)
+            if len(collected) >= limit:
+                return list(reversed(collected))
+    return list(reversed(collected))
+
+
+def _knowledge_tracing_request_directive(last_content: str, current_node) -> str:
+    concept_label = current_node.label if current_node else "this concept"
+    normalized = _normalized_message_text(last_content)
+
+    if normalized.startswith("challenge me with a slightly harder question on this concept"):
+        return (
+            f"Ask one slightly harder assessment question about '{concept_label}'. "
+            "Use a different question type from the recent tracer questions."
+        )
+    if normalized.startswith("give me another question on this concept"):
+        return (
+            f"Ask one new assessment question about '{concept_label}'. "
+            "Use a different question type from the recent tracer questions."
+        )
+    if normalized.startswith("quiz me on the next concept") or normalized.startswith(
+        "ask the next assessment question for the current concept"
+    ):
+        return (
+            f"Ask one assessment question that directly tests '{concept_label}'. "
+            "If this is a new concept, reset the content to match the current concept instead of the previous one."
+        )
+    return f"Ask one assessment question that directly tests '{concept_label}'."
+
+
+def _build_knowledge_tracing_prompt(state: AgentState, current_node, loc: str, style_instruction: str) -> str:
+    subject_label = topic_label_for_mode(str(state.get("topic", "General")), _learning_mode(state))
+    concept_label = current_node.label if current_node else "core concepts overview"
+    concept_id = current_node.id if current_node else str(state.get("topic", "unknown"))
+    concept_description = current_node.description if current_node and current_node.description else "No description provided."
+    recent_questions = _recent_tracing_questions(state, limit=3)
+    recent_questions_block = "\n".join(f"- {question}" for question in recent_questions) if recent_questions else "- none yet"
+
+    return (
+        "You are an Adaptive Knowledge Tracer.\n"
+        f"Subject: {subject_label}\n"
+        f"Current standard or concept code: {concept_label}\n"
+        f"Knowledge-graph node id: {concept_id}\n"
+        f"Current concept description: {concept_description}\n"
+        f"Grade Level: {state['grade_level']}\n"
+        f"Location Context: {loc}.\n"
+        f"{style_instruction.strip()}\n"
+        "Ask exactly one concise assessment question about the CURRENT concept only.\n"
+        "The question must directly assess the current concept description, not the previous concept from the conversation.\n"
+        "If the concept changed, reset the content immediately to match the new concept.\n"
+        "Do not teach the lesson first.\n"
+        "Do not reveal the answer.\n"
+        "Do not ask whether the student wants another question.\n"
+        "Keep the question standalone, student-facing, and short.\n"
+        "Avoid repeating the same question frame, sentence template, or cognitive action as the recent tracer questions below.\n"
+        "Prefer a different format when possible: classify an example, identify a property, compare two cases, choose the best example, interpret a short scenario, or true/false with justification.\n"
+        "Do not ask a coordinate-reading or x/y lookup question unless the CURRENT concept description explicitly mentions axes, coordinates, ordered pairs, graphing points, or the coordinate plane.\n"
+        f"Recent tracer questions to avoid repeating:\n{recent_questions_block}\n"
+        "Output only the next student-facing question."
+    )
+
+
 def _parse_target_grade(state: AgentState) -> int | None:
     try:
         grade_value = state.get("grade_level", "")
@@ -431,17 +511,7 @@ def teacher_node(state: AgentState):
     view_as_student = state.get("view_as_student", False)
     prompt = ""
     if is_knowledge_tracing_mode(learning_mode):
-        prompt = (
-            "You are an Adaptive Knowledge Tracer.\n"
-            f"Subject: {topic_label}\n"
-            f"Grade Level: {state['grade_level']}\n"
-            f"Location Context: {loc}.\n"
-            f"{style_instruction.strip()}\n"
-            "Ask exactly one concise assessment question about the current concept.\n"
-            "Do not teach the lesson first.\n"
-            "Do not reveal the answer.\n"
-            "Keep the question standalone, student-facing, and short."
-        )
+        prompt = _build_knowledge_tracing_prompt(state, current_node, loc, style_instruction)
     elif _is_teacher_role(role) and not view_as_student:
         print("[AGENTS] Using TEACHER_OF_TEACHERS prompt")
 
@@ -477,23 +547,27 @@ def teacher_node(state: AgentState):
     context_msgs = list(state['messages'])
     if context_msgs:
         last_content = context_msgs[-1].content
-        if "[System] Update Grade Level Context" in last_content:
-            if is_knowledge_tracing_mode(learning_mode):
+        if is_knowledge_tracing_mode(learning_mode):
+            if "[System] Update Grade Level Context" in last_content:
                 directive = (
                     f"Knowledge tracing context updated to {state['grade_level']}. "
-                    f"Ask the next assessment question about '{current_node.label if current_node else 'this topic'}'."
+                    f"Ask one assessment question that directly tests '{current_node.label if current_node else 'this topic'}'."
+                )
+            elif "[System] Update Role Context" in last_content:
+                directive = (
+                    f"Role context updated. Continue adaptive testing on '{current_node.label if current_node else 'this topic'}'."
                 )
             else:
-                directive = f"Context Updated to {state['grade_level']}. Topic switched to '{current_node.label if current_node else 'New Topic'}'. Please provide the Teaching Guide for '{current_node.label if current_node else 'this topic'}' immediately."
+                directive = _knowledge_tracing_request_directive(last_content, current_node)
+            context_msgs = [HumanMessage(content=directive)]
+            print(f"[AGENTS] Replaced Tracing Context with Directive: {directive}")
+        elif "[System] Update Grade Level Context" in last_content:
+            directive = f"Context Updated to {state['grade_level']}. Topic switched to '{current_node.label if current_node else 'New Topic'}'. Please provide the Teaching Guide for '{current_node.label if current_node else 'this topic'}' immediately."
             context_msgs[-1] = HumanMessage(content=directive)
             print(f"[AGENTS] Replaced Trigger with Directive: {directive}")
             
         elif "[System] Update Role Context" in last_content:
-            if is_knowledge_tracing_mode(learning_mode):
-                directive = (
-                    f"Role context updated. Continue adaptive testing on '{current_node.label if current_node else 'this topic'}'."
-                )
-            elif _is_teacher_role(role) and not view_as_student:
+            if _is_teacher_role(role) and not view_as_student:
                 directive = f"Role Switched to Teacher View. The user is a colleague. Provide a Teaching Guide for '{current_node.label if current_node else 'this topic'}' immediately."
             else:
                 directive = f"Role Switched to Student View. The user is a student (Grade {state['grade_level']}). Introduce the topic '{current_node.label if current_node else 'New Topic'}' in a fun way and ask a checking question."
@@ -624,14 +698,7 @@ def problem_node(state: AgentState):
 
     problem_topic = current_node.label if current_node else topic_label_for_mode(topic_broad, learning_mode)
     if is_knowledge_tracing_mode(learning_mode):
-        prompt = (
-            "You are an Adaptive Knowledge Tracer.\n"
-            f"Current concept: {problem_topic}\n"
-            f"Grade Level: {state['grade_level']}\n"
-            "Ask one short assessment question only.\n"
-            "Do not teach the concept first.\n"
-            "Do not provide the solution."
-        ) + reinforcement_instruction
+        prompt = _build_knowledge_tracing_prompt(state, current_node, state.get("location", "New Hampshire"), "") + reinforcement_instruction
     else:
         prompt = PROBLEM_GENERATOR_PROMPT.format(
             topic=problem_topic,
@@ -640,7 +707,11 @@ def problem_node(state: AgentState):
     
     print(f"\n[AGENTS] PROBLEM NODE\nPROMPT:\n{prompt}\n")
     
-    context_messages = state['messages'][-5:] 
+    context_messages = (
+        [HumanMessage(content=_knowledge_tracing_request_directive(state['messages'][-1].content if state.get('messages') else "", current_node))]
+        if is_knowledge_tracing_mode(learning_mode)
+        else state['messages'][-5:]
+    )
     full_input = [SystemMessage(content=prompt)] + context_messages
     
     problem_llm, problem_model_name, problem_billing_source, problem_service_tier = _build_llm(

@@ -433,6 +433,14 @@ func _stop_loading():
 	waiting_for_response = false
 	if lbl_status: lbl_status.text = ""
 
+
+func _focus_input_field():
+	if input_field == null or not is_instance_valid(input_field):
+		return
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	input_field.call_deferred("grab_focus")
+	input_field.call_deferred("set_caret_column", input_field.text.length())
+
 func _on_submit(new_text):
 	if new_text.strip_edges() == "": return
 
@@ -463,6 +471,7 @@ func _on_agent_response(response, action, state: Dictionary):
 	_stop_loading()
 	print("Agent Response State: ", state)
 	append_chat("Agent", response)
+	_focus_input_field()
 	
 	# Update Navigation Info
 	if state.has("current_node_label"):
@@ -501,11 +510,12 @@ func _on_session_ready(data):
 			lbl_prev_topic.text = "Prev: " + str(state["prev_node_label"])
 		if state.has("next_node_label"):
 			lbl_next_topic.text = "Next: " + str(state["next_node_label"])
-	
+
 	append_chat("System", "Session loaded. Mastery: " + str(data.get("mastery", 0)) + "%. " + summary)
 	
 	# Stop "Initializing" ticker now that session is ready
 	_stop_loading()
+	_focus_input_field()
 	
 	if lbl_current_topic and topic_label != "" and (not state or not state.has("current_node_label")):
 		lbl_current_topic.text = "Current: " + topic_label
@@ -538,6 +548,7 @@ func _on_network_error(msg: String):
 	if lbl_status:
 		lbl_status.text = msg
 	append_chat("System", msg)
+	_focus_input_field()
 
 func _on_progress_updated(xp, level, mastery):
 	update_gauge(mastery)

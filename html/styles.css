@@ -288,6 +288,59 @@ code {
   box-shadow: var(--shadow);
 }
 
+.mode-strip {
+  display: grid;
+  grid-template-columns: 0.95fr 1.05fr;
+  gap: 1rem;
+  margin-top: 1rem;
+  padding: 1.25rem;
+  border: 1px solid var(--line);
+  border-radius: 1.8rem;
+  background:
+    linear-gradient(135deg, rgba(0, 109, 119, 0.08), rgba(255, 252, 245, 0.82)),
+    rgba(255, 252, 245, 0.76);
+  box-shadow: var(--shadow);
+}
+
+.mode-copy h2,
+.mode-card h3 {
+  margin: 0;
+  font-family: Georgia, "Times New Roman", serif;
+  letter-spacing: -0.03em;
+}
+
+.mode-copy p:last-child,
+.mode-card p {
+  color: var(--ink-soft);
+  line-height: 1.6;
+}
+
+.mode-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.9rem;
+}
+
+.mode-card {
+  min-height: 100%;
+  padding: 1.35rem 1.4rem;
+  border-radius: 1.6rem;
+  border: 1px solid var(--line);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(247, 241, 232, 0.66)),
+    rgba(255, 252, 245, 0.8);
+  box-shadow: var(--shadow);
+}
+
+.mode-kicker {
+  margin: 0 0 0.7rem;
+  color: var(--accent);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
 .teacher-student-copy h2,
 .workflow-card h3,
 .insight-card h2 {
@@ -502,6 +555,8 @@ code {
 @media (max-width: 960px) {
   .hero,
   .feature-grid,
+  .mode-strip,
+  .mode-grid,
   .teacher-student-strip,
   .teacher-student-grid,
   .split-callout,

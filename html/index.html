@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Adaptive Tutor | Browser Learning Studio</title>
-  <meta name="description" content="Adaptive Tutor runs directly in the browser on desktop and iPad, giving students a 3D learning library while teachers and families can stay connected to progress.">
+  <meta name="description" content="Adaptive Tutor runs directly in the browser on desktop and iPad, giving students a 3D learning library with guided lessons, knowledge tracing, and connected teacher visibility.">
   <meta name="theme-color" content="#14212f">
   <link rel="manifest" href="./site.webmanifest">
   <link rel="icon" type="image/png" href="./app/index.icon.png">
@@ -22,9 +22,9 @@
         <p class="eyebrow">Adaptive Tutor</p>
         <h1>A living library for curious students.</h1>
         <p class="lede">
-          Step into a 3D learning space where students explore subjects, continue unfinished lessons,
-          and get guided support that adapts to their level in real time, with optional teacher connection
-          and progress visibility built in.
+          Step into a 3D learning space where students can move through guided lessons in Teach Me mode
+          or switch into Knowledge Tracing for adaptive testing across the knowledge graph, with teacher
+          connection and progress visibility built in.
         </p>
         <div class="hero-actions">
           <a class="primary-link" href="./app/">Launch in Browser</a>
@@ -33,6 +33,7 @@
         </div>
         <ul class="hero-notes">
           <li>Built for independent practice and guided discovery</li>
+          <li>Two learning modes: guided Teach Me and adaptive Knowledge Tracing</li>
           <li>Works on desktop and modern tablets, including iPad</li>
           <li>Math, science, social studies, and English in one space</li>
           <li>Students can connect with a teacher who can review progress after approval</li>
@@ -60,8 +61,8 @@
         </div>
         <div class="panel-card">
           <span class="panel-label">Adaptive Support</span>
-          <strong>Tutoring that adjusts</strong>
-          <p>Lessons respond to grade level, progress, and context so students can move forward without getting lost.</p>
+          <strong>Two ways to adapt</strong>
+          <p>Students can follow guided lessons or switch to Knowledge Tracing, which samples the graph, estimates mastery, and revisits anything that is not fully solid yet.</p>
         </div>
         <div class="panel-card">
           <span class="panel-label">Teacher Connection</span>
@@ -89,9 +90,42 @@
           <p>Progress is saved, so each return visit feels like stepping back into an ongoing learning journey.</p>
         </article>
         <article class="feature-card">
-          <h2>Learn with guidance</h2>
-          <p>Students can ask questions, solve problems, and get support that nudges rather than overwhelms.</p>
+          <h2>Choose the right mode</h2>
+          <p>Use Teach Me for guided explanation and practice, or Knowledge Tracing for fast adaptive checks that map what a student really knows.</p>
         </article>
+      </section>
+
+      <section class="mode-strip" id="knowledge-tracing">
+        <div class="mode-copy">
+          <p class="eyebrow">Knowledge Tracing</p>
+          <h2>Adaptive testing across the knowledge graph, not just the next lesson.</h2>
+          <p>
+            Knowledge Tracing starts from the student’s saved grade level, samples concepts across the subject graph,
+            and updates mastery as the student answers. It is designed for diagnosis, acceleration, and efficient review,
+            not a straight march through one lesson at a time.
+          </p>
+          <p>
+            As students succeed, lower-level prerequisite ideas can be tentatively marked as known. If a concept is not
+            fully locked in, it stays in occasional rotation until mastery is stable.
+          </p>
+        </div>
+        <div class="mode-grid">
+          <article class="mode-card">
+            <p class="mode-kicker">How it works</p>
+            <h3>One checkpoint at a time</h3>
+            <p>The tutor asks a focused question, scores the answer, updates mastery, and moves to the next best checkpoint in the graph.</p>
+          </article>
+          <article class="mode-card">
+            <p class="mode-kicker">Mastery model</p>
+            <h3>Level 10 means fully mastered</h3>
+            <p>Every subject builds toward full mastery. Anything below level 10 can still come back later for spot checks and review.</p>
+          </article>
+          <article class="mode-card">
+            <p class="mode-kicker">Works with Teach Me</p>
+            <h3>Skip what is already solid</h3>
+            <p>When a student returns to guided learning, Teach Me can skip topics that Knowledge Tracing has already confirmed as mastered.</p>
+          </article>
+        </div>
       </section>
 
       <section class="teacher-student-strip">
@@ -148,7 +182,7 @@
           <h2>See more than a final score.</h2>
           <p>
             Review where a student is in the knowledge graph, which topics are active, how long they are working,
-            and how consistently they are answering correctly.
+            how consistently they are answering correctly, and which concepts are fully mastered versus still being revisited.
           </p>
         </article>
         <article class="insight-card">
