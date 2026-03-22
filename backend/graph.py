@@ -301,11 +301,45 @@ def _extract_question_sentences(text: str | None) -> list[str]:
     if cleaned == "":
         return []
 
+    def _looks_like_question(candidate: str) -> bool:
+        normalized = candidate.strip().lower()
+        return normalized.startswith(
+            (
+                "what ",
+                "which ",
+                "who ",
+                "when ",
+                "where ",
+                "why ",
+                "how ",
+                "true or false",
+                "is ",
+                "are ",
+                "do ",
+                "does ",
+                "can ",
+                "could ",
+                "would ",
+                "should ",
+            )
+        )
+
     questions: list[str] = []
     for match in re.findall(r"[^?]*\?", cleaned):
         candidate = match.strip()
         if candidate and candidate not in questions:
             questions.append(candidate)
+    if questions:
+        return questions
+
+    for candidate in re.split(r"(?<=[.!?])\s+", cleaned):
+        normalized_candidate = candidate.strip()
+        if normalized_candidate == "":
+            continue
+        if _looks_like_question(normalized_candidate):
+            normalized_candidate = normalized_candidate.rstrip(".!")
+            if normalized_candidate and normalized_candidate not in questions:
+                questions.append(normalized_candidate)
     return questions
 
 
@@ -318,6 +352,37 @@ def _recent_tracing_questions(state: AgentState, limit: int = 3) -> list[str]:
             if len(collected) >= limit:
                 return list(reversed(collected))
     return list(reversed(collected))
+
+
+def _normalized_question_text(text: str | None) -> str:
+    questions = _extract_question_sentences(text)
+    candidate = questions[-1] if questions else " ".join(str(text or "").split()).strip()
+    candidate = candidate.lower().strip()
+    candidate = re.sub(r"\s+", " ", candidate)
+    return candidate.strip(" \t\r\n.:;!?")
+
+
+def _question_frame_signature(text: str | None) -> str:
+    normalized = _normalized_question_text(text)
+    normalized = re.sub(r"\([^)]*\)", "(...)", normalized)
+    normalized = re.sub(r"\"[^\"]*\"", '"..."', normalized)
+    normalized = re.sub(r"\b\d+(?:/\d+)?\b", "#", normalized)
+    normalized = re.sub(r"\btrue or false\b", "boolean", normalized)
+    return normalized
+
+
+def _is_repeated_tracing_question(candidate: str | None, recent_questions: list[str]) -> bool:
+    normalized_candidate = _normalized_question_text(candidate)
+    if normalized_candidate == "":
+        return False
+
+    candidate_signature = _question_frame_signature(candidate)
+    for recent in recent_questions:
+        if normalized_candidate == _normalized_question_text(recent):
+            return True
+        if candidate_signature != "" and candidate_signature == _question_frame_signature(recent):
+            return True
+    return False
 
 
 def _knowledge_tracing_request_directive(last_content: str, current_node) -> str:
@@ -583,6 +648,27 @@ def teacher_node(state: AgentState):
     )
     start_time = time.perf_counter()
     response = teacher_llm.invoke(messages)
+    if is_knowledge_tracing_mode(learning_mode):
+        recent_questions = _recent_tracing_questions(state, limit=3)
+        if _is_repeated_tracing_question(response.content, recent_questions):
+            repeated_block = "\n".join(f"- {question}" for question in recent_questions) if recent_questions else "- none"
+            retry_prompt = (
+                prompt
+                + "\nThe candidate question matched a recent tracer question too closely."
+                + "\nYou MUST ask a clearly different question with a different surface form."
+                + "\nDo not reuse any of these recent questions or near-duplicates:\n"
+                + repeated_block
+            )
+            retry_directive = (
+                _knowledge_tracing_request_directive(state['messages'][-1].content if state.get('messages') else "", current_node)
+                + " Use a clearly different wording and question frame from the recent tracer questions."
+            )
+            response = teacher_llm.invoke(
+                [
+                    SystemMessage(content=retry_prompt),
+                    HumanMessage(content=retry_directive),
+                ]
+            )
     latency_ms = int((time.perf_counter() - start_time) * 1000)
     input_tokens, output_tokens = _extract_usage_metrics(response)
     print(f"RESPONSE:\n{response.content}\n")

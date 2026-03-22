@@ -318,8 +318,10 @@ func setup_ui():
 	chat_vbox.add_child(lbl_status)
 		
 	input_field = LineEdit.new()
-	input_field.placeholder_text = "Type your question here or use the menu..."
+	input_field.placeholder_text = _input_placeholder_text()
+	input_field.focus_mode = Control.FOCUS_ALL
 	input_field.text_submitted.connect(_on_submit)
+	input_field.gui_input.connect(_on_input_field_gui_input)
 	# input_field.focus_entered.connect(_on_focus) # No longer needed without captured mouse
 	# input_field.focus_exited.connect(_on_unfocus)
 	chat_vbox.add_child(input_field)
@@ -343,6 +345,8 @@ func setup_simplified_ui(parent):
 
 
 func _refresh_learning_mode_ui():
+	if input_field:
+		input_field.placeholder_text = _input_placeholder_text()
 	if current_learning_mode == "knowledge_tracing":
 		var tracing_labels = ["Adaptive Quiz", "Another Check", "Challenge Me", "Review Node"]
 		for index in range(min(action_buttons.size(), tracing_labels.size())):
@@ -386,6 +390,11 @@ func _refresh_teacher_mode_toggle():
 	btn_mode_toggle.disabled = false
 	btn_mode_toggle.tooltip_text = ""
 	btn_mode_toggle.set_pressed_no_signal(view_as_student)
+
+func _input_placeholder_text() -> String:
+	if current_learning_mode == "knowledge_tracing":
+		return "Type your answer here or use the menu..."
+	return "Type your question here or use the menu..."
 
 func _input(event):
 	# Shortcut to focus chat
@@ -438,8 +447,26 @@ func _focus_input_field():
 	if input_field == null or not is_instance_valid(input_field):
 		return
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-	input_field.call_deferred("grab_focus")
-	input_field.call_deferred("set_caret_column", input_field.text.length())
+	_focus_input_field_deferred.call_deferred()
+
+
+func _focus_input_field_deferred():
+	if input_field == null or not is_instance_valid(input_field):
+		return
+	input_field.grab_focus()
+	input_field.set_caret_column(input_field.text.length())
+	await get_tree().process_frame
+	if input_field == null or not is_instance_valid(input_field):
+		return
+	input_field.grab_focus()
+	input_field.set_caret_column(input_field.text.length())
+
+
+func _on_input_field_gui_input(event: InputEvent):
+	if input_field == null or not is_instance_valid(input_field):
+		return
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+		input_field.call_deferred("grab_focus")
 
 func _on_submit(new_text):
 	if new_text.strip_edges() == "": return

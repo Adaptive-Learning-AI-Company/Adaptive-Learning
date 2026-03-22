@@ -9,6 +9,7 @@ import backend.graph as graph_module
 from backend.database import Base, Player
 from backend.graph import (
     _build_knowledge_tracing_prompt,
+    _is_repeated_tracing_question,
     _knowledge_tracing_request_directive,
     _parse_verifier_response,
     adapter_node,
@@ -39,6 +40,17 @@ class _FakeLLM:
 
     def invoke(self, _messages):
         return _FakeResponse(self._content)
+
+
+class _SequentialFakeLLM:
+    def __init__(self, responses: list[str]):
+        self._responses = list(responses)
+        self.calls = 0
+
+    def invoke(self, _messages):
+        index = min(self.calls, len(self._responses) - 1)
+        self.calls += 1
+        return _FakeResponse(self._responses[index])
 
 
 class _FakeNode:
@@ -241,3 +253,83 @@ def test_knowledge_tracing_request_directive_requests_different_question_type():
 
     assert "5.G.3" in directive
     assert "different question type" in directive
+
+
+def test_is_repeated_tracing_question_detects_exact_and_frame_repeats():
+    recent = [
+        "True or false: Every square is also a rectangle.",
+        "If a point is (7, 2), what is the x-coordinate?",
+    ]
+
+    assert _is_repeated_tracing_question(
+        "True or false: Every square is also a rectangle?",
+        recent,
+    ) is True
+    assert _is_repeated_tracing_question(
+        "If a point is (4, 9), what is the x-coordinate?",
+        recent,
+    ) is True
+    assert _is_repeated_tracing_question(
+        "Which shape has four equal sides and four right angles?",
+        recent,
+    ) is False
+
+
+def test_teacher_knowledge_tracing_retries_repeated_question(monkeypatch):
+    testing_session_local = _make_session()
+    monkeypatch.setattr(database_module, "SessionLocal", testing_session_local)
+    monkeypatch.setattr(graph_module, "SessionLocal", testing_session_local)
+
+    fake_llm = _SequentialFakeLLM(
+        [
+            "True or false: Every square is also a rectangle.",
+            "Which figure is always a rectangle: a square, a triangle, or a pentagon?",
+        ]
+    )
+
+    def fake_build_llm(state, model, allow_preferred_model=False, priority_enabled=False, **kwargs):
+        return fake_llm, "fake-model", "platform", None
+
+    monkeypatch.setattr(graph_module, "_build_llm", fake_build_llm)
+
+    db = testing_session_local()
+    player = Player(
+        username="repeat-guard",
+        display_name="repeat-guard",
+        email="repeat-guard@example.com",
+        role="Teacher",
+        grade_level=5,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    db.add(player)
+    db.commit()
+    db.refresh(player)
+    db.close()
+
+    state = {
+        "session_id": "repeat-guard-session",
+        "topic": knowledge_tracing_topic_name("Math"),
+        "grade_level": "Grade 5",
+        "location": "New Hampshire",
+        "learning_style": "Visual",
+        "username": "repeat-guard",
+        "mastery": 0,
+        "current_action": "PROBLEM_GIVEN",
+        "last_problem": "True or false: Every square is also a rectangle.",
+        "next_dest": "TEACHER",
+        "role": "Teacher",
+        "view_as_student": True,
+        "learning_mode": KNOWLEDGE_TRACING_MODE,
+        "messages": [
+            AIMessage(content="True or false: Every square is also a rectangle."),
+            HumanMessage(content="true"),
+            AIMessage(content="[CORRECT] Nice work."),
+            HumanMessage(content="Give me another question on this concept."),
+        ],
+    }
+
+    result = teacher_node(state)
+
+    assert fake_llm.calls == 2
+    assert result["last_problem"] == "Which figure is always a rectangle: a square, a triangle, or a pentagon?"

@@ -41,6 +41,10 @@ func _ready():
 	var pwd_input = $Panel/MainContainer/PasswordInput
 	var acc_input = $Panel/MainContainer/AccessCodeInput
 	var start_btn = $Panel/MainContainer/StartButton
+
+	_configure_login_line_edit(user_opt)
+	_configure_login_line_edit(pwd_input)
+	_configure_login_line_edit(acc_input)
 	
 	# Move to predictable indices
 	container.move_child(user_opt, 0)
@@ -86,6 +90,7 @@ func _ready():
 		advanced_popup.visible = false
 
 	_restore_preferences()
+	_focus_initial_login_field()
 
 func _on_create_user_pressed():
 	get_tree().change_scene_to_file("res://scenes/Registration.tscn")
@@ -514,3 +519,27 @@ func save_preferences(name, grade = null):
 	if grade != null:
 		config.set_value("user", "grade", grade)
 	config.save("user://settings.cfg")
+
+
+func _configure_login_line_edit(field: LineEdit):
+	if field == null:
+		return
+	field.focus_mode = Control.FOCUS_ALL
+	field.clear_button_enabled = true
+	field.gui_input.connect(_on_login_field_gui_input.bind(field))
+
+
+func _on_login_field_gui_input(event: InputEvent, field: LineEdit):
+	if field == null:
+		return
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+		field.call_deferred("grab_focus")
+
+
+func _focus_initial_login_field():
+	var pwd_input = get_node_or_null("Panel/MainContainer/PasswordInput")
+	if username_input and username_input.text.strip_edges() != "" and pwd_input:
+		pwd_input.call_deferred("grab_focus")
+		return
+	if username_input:
+		username_input.call_deferred("grab_focus")

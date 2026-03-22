@@ -74,6 +74,7 @@ var admin_scroll: ScrollContainer
 var teacher_overlay: ColorRect
 var teacher_window: PanelContainer
 var teacher_scroll: ScrollContainer
+var controls_overlay_panel: PanelContainer
 var sidebar_access_label: Label
 var profile_email_input: LineEdit
 var profile_grade_option: OptionButton
@@ -344,6 +345,14 @@ func setup_ui():
 	content_vbox.add_theme_constant_override("separation", 15)
 	sidebar_scroll.add_child(content_vbox)
 
+	sidebar_access_label = Label.new()
+	sidebar_access_label.autowrap_mode = TextServer.AUTOWRAP_WORD
+	sidebar_access_label.text = "Checking tutoring access..."
+	sidebar_access_label.modulate = Color(0.82, 0.84, 0.9, 0.95)
+	content_vbox.add_child(sidebar_access_label)
+
+	content_vbox.add_child(HSeparator.new())
+
 	# 1. Player Stats
 	hud_xp = Label.new()
 	hud_xp.text = "XP: 0"
@@ -439,26 +448,10 @@ func setup_ui():
 		btn.add_child(p)
 		sidebar_subject_progress_bars[sub] = p
 
-	sidebar_access_label = Label.new()
-	sidebar_access_label.autowrap_mode = TextServer.AUTOWRAP_WORD
-	sidebar_access_label.text = "Checking tutoring access..."
-	sidebar_access_label.modulate = Color(0.82, 0.84, 0.9, 0.95)
-	content_vbox.add_child(sidebar_access_label)
-
 	# Spacer
 	var spacer = Control.new()
 	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	content_vbox.add_child(spacer)
-
-	# 3. Controls Help
-	var help = Label.new()
-	help.text = "CONTROLS\n[WASD] Move\n[Mouse] Look\n[Click] Select\n[ESC] Cursor"
-	help.modulate = Color(1, 1, 1, 0.6)
-	help.autowrap_mode = TextServer.AUTOWRAP_WORD
-	help.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	content_vbox.add_child(help)
-
-	content_vbox.add_child(HSeparator.new())
 
 	# 4. Log Out / Edit Profile
 	var profile_btn = Button.new()
@@ -477,6 +470,52 @@ func setup_ui():
 	teacher_dashboard_button.visible = false
 	teacher_dashboard_button.pressed.connect(_on_teacher_dashboard_pressed)
 	content_vbox.add_child(teacher_dashboard_button)
+
+	controls_overlay_panel = PanelContainer.new()
+	controls_overlay_panel.name = "ControlsOverlayPanel"
+	controls_overlay_panel.anchor_left = 1.0
+	controls_overlay_panel.anchor_right = 1.0
+	controls_overlay_panel.anchor_top = 0.0
+	controls_overlay_panel.anchor_bottom = 0.0
+	controls_overlay_panel.offset_left = -290
+	controls_overlay_panel.offset_top = 20
+	controls_overlay_panel.offset_right = -20
+	controls_overlay_panel.offset_bottom = 200
+
+	var controls_style = StyleBoxFlat.new()
+	controls_style.bg_color = Color(0.08, 0.09, 0.11, 0.9)
+	controls_style.border_width_left = 1
+	controls_style.border_width_right = 1
+	controls_style.border_width_top = 1
+	controls_style.border_width_bottom = 1
+	controls_style.border_color = Color(0.58, 0.69, 0.79, 0.35)
+	controls_style.corner_radius_top_left = 12
+	controls_style.corner_radius_top_right = 12
+	controls_style.corner_radius_bottom_left = 12
+	controls_style.corner_radius_bottom_right = 12
+	controls_style.content_margin_left = 14
+	controls_style.content_margin_right = 14
+	controls_style.content_margin_top = 12
+	controls_style.content_margin_bottom = 12
+	controls_overlay_panel.add_theme_stylebox_override("panel", controls_style)
+	ui_canvas.add_child(controls_overlay_panel)
+
+	var controls_vbox = VBoxContainer.new()
+	controls_vbox.add_theme_constant_override("separation", 8)
+	controls_overlay_panel.add_child(controls_vbox)
+
+	var controls_title = Label.new()
+	controls_title.text = "CONTROLS"
+	controls_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	controls_title.add_theme_font_size_override("font_size", 16)
+	controls_vbox.add_child(controls_title)
+
+	var controls_help = Label.new()
+	controls_help.text = "[WASD] Move\n[Mouse] Look\n[Click] Select\n[ESC] Cursor"
+	controls_help.modulate = Color(1, 1, 1, 0.76)
+	controls_help.autowrap_mode = TextServer.AUTOWRAP_WORD
+	controls_help.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	controls_vbox.add_child(controls_help)
 
 	var exit_btn = Button.new()
 	exit_btn.text = "Logout"
