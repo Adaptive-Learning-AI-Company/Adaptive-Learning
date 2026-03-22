@@ -385,6 +385,43 @@ def _is_repeated_tracing_question(candidate: str | None, recent_questions: list[
     return False
 
 
+def _has_explicit_choice_markers(text: str | None) -> bool:
+    cleaned = " ".join(str(text or "").split())
+    if cleaned == "":
+        return False
+    return bool(
+        re.search(r"\b[A-Da-d][\)\.:]\s", cleaned)
+        or re.search(r"\b\d[\)\.:]\s", cleaned)
+        or re.search(r",\s*[^,]+,\s*or\s+[^,?]+", cleaned, flags=re.IGNORECASE)
+        or re.search(r"\bor\b", cleaned, flags=re.IGNORECASE) and ":" in cleaned
+    )
+
+
+def _is_ambiguous_tracing_question(candidate: str | None) -> bool:
+    normalized = _normalized_question_text(candidate)
+    if normalized == "":
+        return False
+
+    if normalized.startswith(
+        (
+            "which statement ",
+            "what statement ",
+            "which of the following statement",
+            "which of these statement",
+        )
+    ) and not _has_explicit_choice_markers(candidate):
+        return True
+
+    if (
+        normalized.startswith(("what is true for every ", "what is always true for every "))
+        or "statement is true for every " in normalized
+        or "statement is always true for every " in normalized
+    ) and "name one" not in normalized and not _has_explicit_choice_markers(candidate):
+        return True
+
+    return False
+
+
 def _knowledge_tracing_request_directive(last_content: str, current_node) -> str:
     concept_label = current_node.label if current_node else "this concept"
     normalized = _normalized_message_text(last_content)
@@ -433,6 +470,10 @@ def _build_knowledge_tracing_prompt(state: AgentState, current_node, loc: str, s
         "Do not reveal the answer.\n"
         "Do not ask whether the student wants another question.\n"
         "Keep the question standalone, student-facing, and short.\n"
+        "Make the expected answer format obvious from the question itself.\n"
+        "If you ask 'which of these' or 'which statement', include the answer choices in the same question.\n"
+        "If multiple answers could be correct, ask for one specific property/example and say 'name one'.\n"
+        "Do not ask ambiguous prompts like 'Which statement is true for every square?' without answer choices.\n"
         "Avoid repeating the same question frame, sentence template, or cognitive action as the recent tracer questions below.\n"
         "Prefer a different format when possible: classify an example, identify a property, compare two cases, choose the best example, interpret a short scenario, or true/false with justification.\n"
         "Do not ask a coordinate-reading or x/y lookup question unless the CURRENT concept description explicitly mentions axes, coordinates, ordered pairs, graphing points, or the coordinate plane.\n"
@@ -650,18 +691,20 @@ def teacher_node(state: AgentState):
     response = teacher_llm.invoke(messages)
     if is_knowledge_tracing_mode(learning_mode):
         recent_questions = _recent_tracing_questions(state, limit=3)
-        if _is_repeated_tracing_question(response.content, recent_questions):
+        if _is_repeated_tracing_question(response.content, recent_questions) or _is_ambiguous_tracing_question(response.content):
             repeated_block = "\n".join(f"- {question}" for question in recent_questions) if recent_questions else "- none"
             retry_prompt = (
                 prompt
-                + "\nThe candidate question matched a recent tracer question too closely."
-                + "\nYou MUST ask a clearly different question with a different surface form."
+                + "\nThe candidate question was invalid for adaptive testing."
+                + "\nIt was either too close to a recent tracer question or too ambiguous about the expected answer."
+                + "\nYou MUST ask a clearly different, unambiguous question."
                 + "\nDo not reuse any of these recent questions or near-duplicates:\n"
                 + repeated_block
             )
             retry_directive = (
                 _knowledge_tracing_request_directive(state['messages'][-1].content if state.get('messages') else "", current_node)
                 + " Use a clearly different wording and question frame from the recent tracer questions."
+                + " Make the question unambiguous and self-contained."
             )
             response = teacher_llm.invoke(
                 [

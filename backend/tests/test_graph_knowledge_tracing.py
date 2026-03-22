@@ -9,6 +9,7 @@ import backend.graph as graph_module
 from backend.database import Base, Player
 from backend.graph import (
     _build_knowledge_tracing_prompt,
+    _is_ambiguous_tracing_question,
     _is_repeated_tracing_question,
     _knowledge_tracing_request_directive,
     _parse_verifier_response,
@@ -333,3 +334,67 @@ def test_teacher_knowledge_tracing_retries_repeated_question(monkeypatch):
 
     assert fake_llm.calls == 2
     assert result["last_problem"] == "Which figure is always a rectangle: a square, a triangle, or a pentagon?"
+
+
+def test_is_ambiguous_tracing_question_flags_statement_without_choices():
+    assert _is_ambiguous_tracing_question("Which statement is true for every square?") is True
+    assert _is_ambiguous_tracing_question("What is true for every square?") is True
+    assert _is_ambiguous_tracing_question(
+        "Which statement is true for every square: A) It has four right angles. B) It has three sides."
+    ) is False
+    assert _is_ambiguous_tracing_question("Name one property that is true for every square.") is False
+
+
+def test_teacher_knowledge_tracing_retries_ambiguous_question(monkeypatch):
+    testing_session_local = _make_session()
+    monkeypatch.setattr(database_module, "SessionLocal", testing_session_local)
+    monkeypatch.setattr(graph_module, "SessionLocal", testing_session_local)
+
+    fake_llm = _SequentialFakeLLM(
+        [
+            "Which statement is true for every square?",
+            "Name one property that is true for every square.",
+        ]
+    )
+
+    def fake_build_llm(state, model, allow_preferred_model=False, priority_enabled=False, **kwargs):
+        return fake_llm, "fake-model", "platform", None
+
+    monkeypatch.setattr(graph_module, "_build_llm", fake_build_llm)
+
+    db = testing_session_local()
+    player = Player(
+        username="ambiguous-guard",
+        display_name="ambiguous-guard",
+        email="ambiguous-guard@example.com",
+        role="Teacher",
+        grade_level=5,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    db.add(player)
+    db.commit()
+    db.refresh(player)
+    db.close()
+
+    state = {
+        "session_id": "ambiguous-guard-session",
+        "topic": knowledge_tracing_topic_name("Math"),
+        "grade_level": "Grade 5",
+        "location": "New Hampshire",
+        "learning_style": "Visual",
+        "username": "ambiguous-guard",
+        "mastery": 0,
+        "current_action": "IDLE",
+        "last_problem": "",
+        "next_dest": "TEACHER",
+        "role": "Teacher",
+        "view_as_student": True,
+        "learning_mode": KNOWLEDGE_TRACING_MODE,
+        "messages": [HumanMessage(content="Quiz me on the next concept.")],
+    }
+
+    result = teacher_node(state)
+
+    assert fake_llm.calls == 2
+    assert result["last_problem"] == "Name one property that is true for every square."
