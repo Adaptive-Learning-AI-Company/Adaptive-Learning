@@ -36,12 +36,34 @@ detect_godot_bin() {
   return 1
 }
 
+find_text_in_file() {
+  local pattern="$1"
+  local file_path="$2"
+
+  if command -v rg >/dev/null 2>&1; then
+    rg -F "$pattern" "$file_path" >/dev/null 2>&1
+    return $?
+  fi
+
+  if command -v grep >/dev/null 2>&1; then
+    grep -F "$pattern" "$file_path" >/dev/null 2>&1
+    return $?
+  fi
+
+  echo "[error] Neither 'rg' nor 'grep' is available for export preset lookup." >&2
+  return 2
+}
+
 find_preset() {
   local preset=""
   for preset in "$@"; do
-    if rg -F "name=\"$preset\"" "$PRESETS_FILE" >/dev/null 2>&1; then
+    if find_text_in_file "name=\"$preset\"" "$PRESETS_FILE"; then
       echo "$preset"
       return 0
+    fi
+    local lookup_status=$?
+    if [[ "$lookup_status" -eq 2 ]]; then
+      return 2
     fi
   done
   return 1
@@ -53,7 +75,13 @@ run_export() {
   shift 2
 
   local preset=""
-  if ! preset="$(find_preset "$@")"; then
+  preset="$(find_preset "$@")"
+  local preset_status=$?
+  if [[ "$preset_status" -ne 0 ]]; then
+    if [[ "$preset_status" -eq 2 ]]; then
+      echo "[error] Unable to inspect export presets for $label." >&2
+      return 1
+    fi
     echo "[skip] No export preset found for $label ($*)"
     return 0
   fi
