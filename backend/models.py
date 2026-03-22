@@ -43,6 +43,12 @@ class PasswordResetRequest(BaseModel):
     # OR email? User said "from email addresses retrieved from the userid".
     # So user inputs UserID, we find Email, and send link.
 
+class HelpRequest(BaseModel):
+    name: str
+    email: str
+    user_id: Optional[str] = None
+    message: str
+
 class ChatRequest(BaseModel):
     session_id: str
     message: str

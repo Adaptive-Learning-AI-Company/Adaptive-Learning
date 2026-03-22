@@ -15,6 +15,7 @@ const DEFAULT_ROLE := "Student"
 
 @onready var advanced_popup = get_node_or_null("AdvancedPopup")
 var forgot_pcode_popup: Window = null # Dynamic window for reset
+var help_popup: Window = null
 
 func _ready():
 	# Dynamic Password Input for Login
@@ -56,7 +57,19 @@ func _ready():
 		link.modulate = Color(0.5, 0.5, 1.0)
 		link.pressed.connect(_on_forgot_password_pressed)
 		$Panel/MainContainer.add_child(link)
-		$Panel/MainContainer.move_child(link, $Panel/MainContainer/StartButton.get_index() + 1)
+	if not has_node("Panel/MainContainer/GetHelpLink"):
+		var help_link = LinkButton.new()
+		help_link.name = "GetHelpLink"
+		help_link.text = "Get Help"
+		help_link.underline = LinkButton.UNDERLINE_MODE_ALWAYS
+		help_link.modulate = Color(0.5, 0.5, 1.0)
+		help_link.pressed.connect(_on_get_help_pressed)
+		$Panel/MainContainer.add_child(help_link)
+
+	var forgot_link = $Panel/MainContainer.get_node("ForgotLink")
+	var get_help_link = $Panel/MainContainer.get_node("GetHelpLink")
+	$Panel/MainContainer.move_child(forgot_link, $Panel/MainContainer/StartButton.get_index() + 1)
+	$Panel/MainContainer.move_child(get_help_link, forgot_link.get_index() + 1)
 	
 	create_user_btn.pressed.connect(_on_create_user_pressed)
 	start_button.pressed.connect(_on_start_pressed)
@@ -169,6 +182,149 @@ func _redeem_access_code_then_initialize(username):
 		start_button.disabled = false
 		status_label.text = err if err != "" else "Access code failed."
 	)
+
+func _on_get_help_pressed():
+	if help_popup == null:
+		help_popup = Window.new()
+		help_popup.title = "Get Help"
+		help_popup.close_requested.connect(func(): help_popup.hide())
+		help_popup.size = Vector2(420, 430)
+		help_popup.position = Vector2(100, 100)
+		add_child(help_popup)
+
+		var vbox = VBoxContainer.new()
+		vbox.name = "VBoxContainer"
+		vbox.set_anchors_preset(Control.PRESET_FULL_RECT)
+		vbox.offset_left = 10
+		vbox.offset_top = 10
+		vbox.offset_right = -10
+		vbox.offset_bottom = -10
+		help_popup.add_child(vbox)
+
+		var intro = Label.new()
+		intro.text = "Send your question or comment to Adaptive Tutor support."
+		intro.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		vbox.add_child(intro)
+
+		var name_label = Label.new()
+		name_label.text = "Name *"
+		vbox.add_child(name_label)
+
+		var name_input = LineEdit.new()
+		name_input.name = "HelpNameInput"
+		name_input.placeholder_text = "Your name"
+		vbox.add_child(name_input)
+
+		var email_label = Label.new()
+		email_label.text = "Email *"
+		vbox.add_child(email_label)
+
+		var email_input = LineEdit.new()
+		email_input.name = "HelpEmailInput"
+		email_input.placeholder_text = "you@example.com"
+		vbox.add_child(email_input)
+
+		var user_label = Label.new()
+		user_label.text = "User ID (Optional)"
+		vbox.add_child(user_label)
+
+		var user_input = LineEdit.new()
+		user_input.name = "HelpUserIdInput"
+		user_input.placeholder_text = "Your username"
+		vbox.add_child(user_input)
+
+		var message_label = Label.new()
+		message_label.text = "Question / Comment *"
+		vbox.add_child(message_label)
+
+		var message_input = TextEdit.new()
+		message_input.name = "HelpMessageInput"
+		message_input.placeholder_text = "How can we help?"
+		message_input.custom_minimum_size = Vector2(0, 140)
+		message_input.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		vbox.add_child(message_input)
+
+		var btn = Button.new()
+		btn.name = "HelpSubmitButton"
+		btn.text = "Send Help Request"
+		btn.pressed.connect(_submit_help_request)
+		vbox.add_child(btn)
+
+		var status = Label.new()
+		status.name = "Status"
+		status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		status.modulate = Color(1, 1, 0)
+		vbox.add_child(status)
+
+	var help_user_input = help_popup.get_node("VBoxContainer/HelpUserIdInput")
+	if help_user_input and help_user_input.text.strip_edges() == "" and username_input:
+		help_user_input.text = username_input.text.strip_edges()
+
+	var help_status = help_popup.get_node("VBoxContainer/Status")
+	help_status.modulate = Color(1, 1, 0)
+	help_status.text = ""
+	help_popup.popup_centered()
+
+
+func _submit_help_request():
+	if help_popup == null:
+		return
+
+	var name_input = help_popup.get_node("VBoxContainer/HelpNameInput")
+	var email_input = help_popup.get_node("VBoxContainer/HelpEmailInput")
+	var user_input = help_popup.get_node("VBoxContainer/HelpUserIdInput")
+	var message_input = help_popup.get_node("VBoxContainer/HelpMessageInput")
+	var submit_button = help_popup.get_node("VBoxContainer/HelpSubmitButton")
+	var status = help_popup.get_node("VBoxContainer/Status")
+
+	var name_value = name_input.text.strip_edges()
+	var email_value = email_input.text.strip_edges()
+	var user_value = user_input.text.strip_edges()
+	var message_value = message_input.text.strip_edges()
+
+	if name_value == "" or email_value == "" or message_value == "":
+		status.modulate = Color(1, 0.6, 0.6)
+		status.text = "Name, email, and question / comment are required."
+		return
+
+	status.modulate = Color(1, 1, 0)
+	status.text = "Sending..."
+	submit_button.disabled = true
+
+	var url = NetworkManager.base_url + "/request-help"
+	var http = HTTPRequest.new()
+	help_popup.add_child(http)
+	http.request_completed.connect(func(_result, code, _headers, body):
+		http.queue_free()
+		submit_button.disabled = false
+
+		if code == 200:
+			status.modulate = Color(0.7, 1.0, 0.7)
+			status.text = "Help request sent."
+			message_input.text = ""
+			return
+
+		status.modulate = Color(1, 0.6, 0.6)
+		var parsed = JSON.parse_string(body.get_string_from_utf8())
+		if parsed and parsed.has("detail"):
+			status.text = str(parsed["detail"])
+		else:
+			status.text = "Unable to send help request."
+	)
+
+	var data = {
+		"name": name_value,
+		"email": email_value,
+		"user_id": user_value,
+		"message": message_value
+	}
+	var headers = [
+		"Content-Type: application/json",
+		"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+		"Accept: application/json, text/plain, */*",
+		"Connection: keep-alive"
+	]
+	http.request(url, headers, HTTPClient.METHOD_POST, JSON.stringify(data))
 
 func _on_forgot_password_pressed():
 	# Create Popup if missing

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from contextlib import asynccontextmanager
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage
-from .models import InitRequest, ChatRequest, ChatResponse, BookSelectRequest, BookSelectResponse, InitSessionRequest, InitSessionResponse, ResumeShelfRequest, ResumeShelfResponse, PlayerStatsRequest, GraphDataRequest, GraphDataResponse, GraphNode, SetCurrentNodeRequest, RegisterRequest, LoginRequest, LogoutRequest, PasswordResetRequest, ProfileRequest, UpdateProfileRequest, ProfileResponse, TeacherLinkRequest, TeacherLinkListRequest, TeacherLinkActionRequest, TeacherLinkRevokeRequest, TeacherStudentProgressRequest, TeacherLinkSummary, TeacherLinkListResponse, TeacherDashboardResponse, TeacherStudentProgressResponse, TeacherStudentSummary, StudentTopicProgressSummary, StudentNodeProgressSummary, StudentActivitySessionSummary, HostedModelConfigRequest, UpdateHostedModelConfigRequest, HostedModelOptionSummary, HostedModelConfigResponse, BillingStatusRequest, BillingCheckoutRequest, BillingPortalRequest, BillingStatusResponse, BillingCheckoutResponse, BillingPortalResponse, RedeemAccessCodeRequest, RedeemAccessCodeResponse, CreatePromoCodeRequest, CreatePromoCodeResponse, GrantAccessRequest, RevokeAccessGrantRequest, RevokePromoCodeRequest, ListAccessGrantsRequest, ListPromoCodesRequest, AccessGrantSummary, PromoCodeSummary, AccessGrantListResponse, PromoCodeListResponse, NodeLinksRequest, NodeLinksResponse, SubmitNodeLinkRequest, SubmitNodeLinkResponse, ReviewNodeLinkRequest, PendingNodeLinksRequest, PendingNodeLinksResponse, NodeLinkSummary
+from .models import InitRequest, ChatRequest, ChatResponse, BookSelectRequest, BookSelectResponse, InitSessionRequest, InitSessionResponse, ResumeShelfRequest, ResumeShelfResponse, PlayerStatsRequest, GraphDataRequest, GraphDataResponse, GraphNode, SetCurrentNodeRequest, RegisterRequest, LoginRequest, LogoutRequest, PasswordResetRequest, HelpRequest, ProfileRequest, UpdateProfileRequest, ProfileResponse, TeacherLinkRequest, TeacherLinkListRequest, TeacherLinkActionRequest, TeacherLinkRevokeRequest, TeacherStudentProgressRequest, TeacherLinkSummary, TeacherLinkListResponse, TeacherDashboardResponse, TeacherStudentProgressResponse, TeacherStudentSummary, StudentTopicProgressSummary, StudentNodeProgressSummary, StudentActivitySessionSummary, HostedModelConfigRequest, UpdateHostedModelConfigRequest, HostedModelOptionSummary, HostedModelConfigResponse, BillingStatusRequest, BillingCheckoutRequest, BillingPortalRequest, BillingStatusResponse, BillingCheckoutResponse, BillingPortalResponse, RedeemAccessCodeRequest, RedeemAccessCodeResponse, CreatePromoCodeRequest, CreatePromoCodeResponse, GrantAccessRequest, RevokeAccessGrantRequest, RevokePromoCodeRequest, ListAccessGrantsRequest, ListPromoCodesRequest, AccessGrantSummary, PromoCodeSummary, AccessGrantListResponse, PromoCodeListResponse, NodeLinksRequest, NodeLinksResponse, SubmitNodeLinkRequest, SubmitNodeLinkResponse, ReviewNodeLinkRequest, PendingNodeLinksRequest, PendingNodeLinksResponse, NodeLinkSummary
 from .graph import create_graph
 from .database import init_db, get_db, Player, TopicProgress, AuthSession, apply_player_defaults
 from .config import load_local_env, normalize_avatar_id, normalize_account_status
@@ -401,34 +401,70 @@ def _extract_usage_metrics(message) -> tuple[int | None, int | None]:
 
     return input_tokens, output_tokens
 
-# Real Email Sender (IONOS SMTP)
-# Real Email Sender (IONOS SMTP)
-def send_email_reset_link(to_email: str, link: str):
+def send_email_mock_message(email: str, subject: str, body: str):
+    print(f"\n[MOCK EMAIL SERVICE] To: {email}")
+    print(f"Subject: {subject}")
+    print(f"Body:\n{body}\n")
+
+
+def send_email_mock(email: str, link: str):
+    send_email_mock_message(
+        email,
+        "Password Reset Request",
+        f"Click here to reset your password: {link}",
+    )
+
+
+def _send_multipart_email(
+    to_email: str,
+    subject: str,
+    text_body: str,
+    html_body: str,
+    reply_to: str | None = None,
+):
     smtp_server = os.getenv("EMAIL_HOST", "smtp.ionos.com")
     smtp_port_str = os.getenv("EMAIL_PORT", "587")
     sender_email = os.getenv("EMAIL_USER", "admin@adaptivetutor.ai")
     password = os.getenv("EMAIL_PASSWORD")
-    
-    # Check if critical vars are present
+
     if not smtp_server or not sender_email or not password:
         print("[SMTP] EMAIL_HOST/USER/PASSWORD not set. Falling back to Mock.")
-        send_email_mock(to_email, link)
+        send_email_mock_message(to_email, subject, text_body)
         return
 
     smtp_port = int(smtp_port_str)
-    
-    if not password:
-        print("[SMTP] No EMAIL_PASSWORD set. Falling back to Mock.")
-        send_email_mock(to_email, link)
-        return
 
     try:
         message = MIMEMultipart("alternative")
-        message["Subject"] = "Password Reset Request - Adaptive Tutor"
+        message["Subject"] = subject
         message["From"] = sender_email
         message["To"] = to_email
+        if reply_to:
+            message["Reply-To"] = reply_to
 
-        text = f"""\
+        part1 = MIMEText(text_body, "plain")
+        part2 = MIMEText(html_body, "html")
+        message.attach(part1)
+        message.attach(part2)
+
+        context = ssl.create_default_context()
+        print(f"[SMTP] Connecting to {smtp_server}:{smtp_port}...")
+
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls(context=context)
+            server.login(sender_email, password)
+            server.sendmail(sender_email, to_email, message.as_string())
+
+        print(f"[SMTP] Email sent successfully to {to_email}")
+
+    except Exception as e:
+        print(f"[SMTP] Error sending email: {e}")
+        send_email_mock_message(to_email, subject, text_body)
+
+
+def send_email_reset_link(to_email: str, link: str):
+    subject = "Password Reset Request - Adaptive Tutor"
+    text_body = f"""\
 Hi,
 
 You requested a password reset for Adaptive Tutor.
@@ -438,7 +474,7 @@ Please click the link below to set a new password:
 
 If you did not request this, please ignore this email.
 """
-        html = f"""\
+    html_body = f"""\
 <html>
   <body>
     <p>Hi,</p>
@@ -450,32 +486,47 @@ If you did not request this, please ignore this email.
   </body>
 </html>
 """
+    _send_multipart_email(to_email, subject, text_body, html_body)
 
-        part1 = MIMEText(text, "plain")
-        part2 = MIMEText(html, "html")
-        message.attach(part1)
-        message.attach(part2)
 
-        context = ssl.create_default_context()
-        print(f"[SMTP] Connecting to {smtp_server}:{smtp_port}...")
-        
-        with smtplib.SMTP(smtp_server, smtp_port) as server:
-            server.starttls(context=context)
-            server.login(sender_email, password)
-            server.sendmail(sender_email, to_email, message.as_string())
-            
-        print(f"[SMTP] Email sent successfully to {to_email}")
+def send_help_request_email(name: str, email_address: str, user_id: str | None, message: str):
+    admin_email = "admin@adaptivetutor.ai"
+    header_safe_name = re.sub(r"[\r\n]+", " ", name).strip()
+    safe_name = html.escape(name)
+    safe_email = html.escape(email_address)
+    safe_user_id = html.escape(user_id) if user_id else ""
+    safe_message = html.escape(message).replace("\n", "<br>")
+    user_id_line = f"User ID: {user_id}\n" if user_id else ""
+    html_user_id = f"<p><b>User ID:</b> {safe_user_id}</p>" if user_id else ""
 
-    except Exception as e:
-        print(f"[SMTP] Error sending email: {e}")
-        # Build robustness: fall back to printing link so user isn't stuck during testing
-        send_email_mock(to_email, link)
-
-# Mock Email Sender (Fallback)
-def send_email_mock(email: str, link: str):
-    print(f"\n[MOCK EMAIL SERVICE] To: {email}")
-    print(f"Subject: Password Reset Request")
-    print(f"Body: Click here to reset your password: {link}\n")
+    subject = f"Adaptive Tutor Help Request from {header_safe_name}"
+    text_body = (
+        "A user submitted a help request through Adaptive Tutor.\n\n"
+        f"Name: {name}\n"
+        f"Email: {email_address}\n"
+        f"{user_id_line}\n"
+        "Question / Comment:\n"
+        f"{message}\n"
+    )
+    html_body = f"""\
+<html>
+  <body>
+    <p>A user submitted a help request through <b>Adaptive Tutor</b>.</p>
+    <p><b>Name:</b> {safe_name}</p>
+    <p><b>Email:</b> {safe_email}</p>
+    {html_user_id}
+    <p><b>Question / Comment:</b></p>
+    <p>{safe_message}</p>
+  </body>
+</html>
+"""
+    _send_multipart_email(
+        admin_email,
+        subject,
+        text_body,
+        html_body,
+        reply_to=email_address,
+    )
 
 # Global graph instance
 graph = None
@@ -1137,6 +1188,26 @@ async def request_password_reset(request: PasswordResetRequest, db: Session = De
     reset_link = f"{PUBLIC_BASE_URL}/reset-password?token={token}"
     send_email_reset_link(player.email, reset_link)
     return {"message": "If username exists with an email, a reset link has been sent."}
+
+
+@app.post("/request-help")
+async def request_help(request: HelpRequest):
+    name = _clean_optional_text(request.name)
+    email_address = _clean_optional_text(request.email)
+    user_id = _clean_optional_text(request.user_id)
+    message = _clean_optional_text(request.message)
+
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required.")
+    if not email_address:
+        raise HTTPException(status_code=400, detail="Email address is required.")
+    if not _is_valid_email(email_address):
+        raise HTTPException(status_code=400, detail="Enter a valid email address.")
+    if not message:
+        raise HTTPException(status_code=400, detail="Question / comment is required.")
+
+    send_help_request_email(name, email_address, user_id, message)
+    return {"message": "Help request sent."}
 
 @app.get("/reset-password", response_class=HTMLResponse)
 async def reset_password_form(token: str):
